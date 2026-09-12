@@ -27,11 +27,11 @@ router.delete('/:id', requireRole('admin', 'academic_mentor'), controller.delete
 router.post('/:id/lessons', requireRole('admin', 'academic_mentor'), controller.addLesson);
 
 // 资源
-router.post('/:id/resources', requireRole('admin', 'academic_mentor'), uploadResource.single('file'), controller.uploadResource);
+router.post('/:id/resources', requireRole('admin', 'academic_mentor'), controller.requireCourseManagement, uploadResource.single('file'), controller.uploadResource);
 
 // 课程回放
 router.get('/:id/replays', controller.listReplays);
-router.post('/:id/replays', requireRole('admin', 'academic_mentor'), uploadReplay.single('file'), controller.uploadReplay);
+router.post('/:id/replays', requireRole('admin', 'academic_mentor'), controller.requireCourseManagement, uploadReplay.single('file'), controller.uploadReplay);
 
 // 任务
 router.post('/lessons/:lesson_id/tasks', requireRole('admin', 'academic_mentor'), controller.addTask);

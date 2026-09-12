@@ -38,7 +38,7 @@ export default function CourseList() {
     ...(user?.role !== 'student' ? [{ title: '学习进度', dataIndex: 'progress', key: 'progress', render: (v) => `${v || 0}%` }] : []),
     ...(user?.role !== 'student' ? [{ title: '学生数', dataIndex: 'student_count', key: 'student_count' }, { title: '创建者', dataIndex: 'creator_name', key: 'creator_name' }] : []),
     ...(canManage(user?.role) ? [{
-      title: '操作', key: 'actions', render: (_, r) => (
+      title: '操作', key: 'actions', render: (_, r) => r.can_manage ? (
         <Space>
           <Button size="small" onClick={() => navigate(`/courses/${r.id}/edit`)}>编辑</Button>
           {r.status === 'draft' && (
@@ -55,7 +55,7 @@ export default function CourseList() {
             </Popconfirm>
           )}
         </Space>
-      )
+      ) : '只读'
     }] : []),
   ];
 

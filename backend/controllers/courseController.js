@@ -9,6 +9,7 @@ const { toFileDto } = require('../helpers/fileDto');
 const { removeFilesAfterCommit } = require('../helpers/fileLifecycle');
 const notificationService = require('../services/notificationService');
 const { NOTIFICATION_EVENTS } = require('../constants/notification');
+const coursePolicy = require('../policies/coursePolicy');
 
 function removeUploadedFile(file) {
   if (file?.path) {
@@ -17,10 +18,17 @@ function removeUploadedFile(file) {
 }
 
 function canManageCourse(user, courseId) {
-  if (user.role === 'admin' || user.role === 'academic_mentor') return true;
   const course = db.prepare('SELECT created_by FROM courses WHERE id = ?').get(courseId);
-  return !!course && course.created_by === user.id;
+  return coursePolicy.canManageCourse(user, course);
 }
+
+// 上传前鉴权，避免无权限请求先写入资源或视频文件。
+exports.requireCourseManagement = (req, res, next) => {
+  try {
+    if (!canManageCourse(req.user, req.params.id)) return res.status(403).json({ error: '无权管理该课程' });
+    next();
+  } catch (err) { next(err); }
+};
 
 // 课程列表
 exports.list = (req, res) => {
@@ -52,7 +60,7 @@ exports.list = (req, res) => {
 
     sql += ' ORDER BY c.updated_at DESC';
 
-    const courses = db.prepare(sql).all(...params).map((course) => ({ ...course, progress: 0 }));
+    const courses = db.prepare(sql).all(...params).map((course) => ({ ...course, progress: 0, can_manage: coursePolicy.canManageCourse(req.user, course) }));
     const themes = db.prepare('SELECT DISTINCT theme FROM courses WHERE theme IS NOT NULL').all();
 
     res.json({ title: '课程管理', courses, themes, filters: req.query });
@@ -164,7 +172,8 @@ exports.detail = (req, res) => {
       ? db.prepare("SELECT id, real_name, role, school_id FROM users WHERE role IN ('teacher','academic_mentor') ORDER BY real_name").all()
       : [];
 
-    res.json({ title: course.title, course, lessons, tasks, progress, resources, enrollments, teachers });
+    res.json({ title: course.title, course: { ...course, can_manage: coursePolicy.canManageCourse(req.user, course),
+      can_enroll: course.status !== 'archived' && canEnrollCourse(req.user, course.id) }, lessons, tasks, progress, resources, enrollments, teachers });
   } catch (err) {
     console.error('课程详情错误:', err);
     res.status(500).json({ error: '操作失败，请稍后重试' });
@@ -179,7 +188,7 @@ exports.showEdit = (req, res) => {
       return res.status(400).json({ error: '课程不存在' });
     }
     if (!canManageCourse(req.user, course.id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     res.json({ title: '编辑课程', course, errors: [] });
   } catch (err) {
@@ -193,7 +202,7 @@ exports.update = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const fields = ['title','theme','description','driving_question','story_line',
                     'grade_level','difficulty','total_hours','materials_needed','status'];
@@ -226,7 +235,7 @@ exports.delete = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const course = db.prepare('SELECT id, title, status FROM courses WHERE id = ?').get(id);
     if (!course) {
@@ -265,7 +274,7 @@ exports.addLesson = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const { title, description, duration, start_at, end_at, location, instructor_id } = req.body;
 
@@ -307,7 +316,7 @@ exports.uploadResource = (req, res) => {
       if (req.file) {
         try { fs.unlinkSync(req.file.path); } catch (e) { /* 文件可能已删除 */ }
       }
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     if (!req.file) {
       return res.status(400).json({ error: '请选择要上传的文件' });
@@ -375,7 +384,7 @@ exports.addTask = (req, res) => {
       return res.status(400).json({ error: '课时不存在' });
     }
     if (!canManageCourse(req.user, lesson.course_id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
 
     const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM tasks WHERE lesson_id = ?').get(lesson_id);
