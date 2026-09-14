@@ -43,7 +43,7 @@ function loadStudentArchive(studentId, user) {
     : null;
 
   const works = db.prepare(`
-      SELECT w.*, u.teacher_id AS student_teacher_id, c.id AS course_id
+      SELECT w.*, u.teacher_id AS student_teacher_id, u.school_id AS student_school_id, c.id AS course_id
       FROM works w
       JOIN users u ON u.id = w.student_id
       LEFT JOIN enrollments e ON e.id = w.enrollment_id
