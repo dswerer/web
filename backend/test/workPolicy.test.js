@@ -10,10 +10,12 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 
 const testDbPath = path.join(os.tmpdir(), `pbl-workpolicy-${process.pid}-${Date.now()}.db`);
+const testUploadPath = path.join(os.tmpdir(), `pbl-workpolicy-uploads-${process.pid}-${Date.now()}`);
 const bootstrapDb = new Database(testDbPath);
 bootstrapDb.close();
 
 process.env.DB_PATH = testDbPath;
+process.env.UPLOAD_PATH = testUploadPath;
 process.env.JWT_SECRET = 'test-jwt-secret';
 process.env.NODE_ENV = 'test';
 
@@ -56,6 +58,11 @@ before(async () => {
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (1, 1, '任务一', 1, 1)").run();
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (2, 1, '任务二', 2, 1)").run();
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (3, 1, '文字任务', 3, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (4, 1, '附件任务', 4, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (5, 1, '普通文字任务', 5, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (6, 1, '空内容任务', 6, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (7, 1, '强制附件任务', 7, 1)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (8, 1, '伪造附件任务', 8, 0)").run();
 
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (1, 4, 1, 6)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (2, 4, 2, 6)").run();
@@ -86,6 +93,7 @@ after(() => {
     const file = testDbPath + suffix;
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
+  fs.rmSync(testUploadPath, { recursive: true, force: true });
 });
 
 async function login(realName) {
@@ -114,6 +122,14 @@ function authed(token, method, url, body) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+function uploadWork(token, form) {
+  return fetch(`${baseUrl}/api/works`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
   });
 }
 
@@ -227,4 +243,43 @@ test('文字任务提交写入work_id成长事件并拒绝重复根', async () =
 
   const second = await authed(token, 'POST', '/api/works', { task_id: 3, title: '重复提交', description: '内容' });
   assert.equal(second.status, 400, '预检应拒绝重复根提交');
+});
+
+test('学生提交作品支持仅附件或仅文字，并保留空内容和文件签名校验', async () => {
+  const token = await tokenFor('学生A');
+
+  const attachmentOnly = new FormData();
+  attachmentOnly.append('task_id', '4');
+  attachmentOnly.append('title', '仅附件作品');
+  attachmentOnly.append('file', new Blob(['%PDF-1.4\n附件内容'], { type: 'application/pdf' }), '成果.pdf');
+  const attachmentResult = await uploadWork(token, attachmentOnly);
+  assert.equal(attachmentResult.status, 200, '仅附件应能提交');
+  const attachmentBody = await attachmentResult.json();
+  const attachmentWork = db.prepare('SELECT file_path, file_name, description FROM works WHERE id = ?').get(attachmentBody.id);
+  assert.equal(attachmentWork.description, null);
+  assert.equal(attachmentWork.file_name, '成果.pdf');
+  assert.ok(fs.existsSync(attachmentWork.file_path), '附件应被保存');
+
+  const textOnly = new FormData();
+  textOnly.append('task_id', '5');
+  textOnly.append('title', '仅文字作品');
+  textOnly.append('description', '这是成果说明');
+  assert.equal((await uploadWork(token, textOnly)).status, 200, '仅文字应能提交非强制附件任务');
+
+  const empty = new FormData();
+  empty.append('task_id', '6');
+  empty.append('title', '空内容作品');
+  assert.equal((await uploadWork(token, empty)).status, 400, '文字和附件均为空应被拒绝');
+
+  const requiredAttachment = new FormData();
+  requiredAttachment.append('task_id', '7');
+  requiredAttachment.append('title', '文字提交作品');
+  requiredAttachment.append('description', '只有文字');
+  assert.equal((await uploadWork(token, requiredAttachment)).status, 200, '历史强制附件配置不应阻止仅文字提交');
+
+  const forgedAttachment = new FormData();
+  forgedAttachment.append('task_id', '8');
+  forgedAttachment.append('title', '伪造附件作品');
+  forgedAttachment.append('file', new Blob(['不是 PDF'], { type: 'application/pdf' }), '伪造.pdf');
+  assert.equal((await uploadWork(token, forgedAttachment)).status, 400, '伪造文件签名仍应被拒绝');
 });
