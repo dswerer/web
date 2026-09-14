@@ -94,39 +94,44 @@ function fileFilter(req, file, cb) {
     return cb(err, false);
   }
 
-  if (!MAGIC_CHECKED_EXT.has(ext)) {
-    return cb(null, true);
-  }
+  // Multer v2 的 fileFilter 阶段不再提供 file.stream；签名校验统一在文件
+  // 落盘后执行，避免访问不存在的流导致所有附件请求返回 500。
+  return cb(null, true);
+}
 
-  // 读取文件头（最多 16 字节）做魔数校验，读完后 unshift 回流传给 multer 继续处理
-  const checker = MAGIC_CHECK[ext];
-  let head = Buffer.alloc(0);
-  let handled = false;
-  const done = (ok, message) => {
-    if (handled) return;
-    handled = true;
-    file.stream.removeListener('data', onData);
-    file.stream.removeListener('end', onEnd);
-    file.stream.removeListener('error', onErr);
-    if (ok) return cb(null, true);
-    const err = new Error(message);
-    err.status = 400;
-    cb(err, false);
-  };
-  const onData = (chunk) => {
-    head = Buffer.concat([head, chunk]);
-    if (head.length >= 16) {
-      file.stream.unshift(head);
-      done(checker(head), `文件内容与扩展名不符（${ext}）`);
+function removeFile(file) {
+  if (file?.path) {
+    try { fs.unlinkSync(file.path); } catch (err) { /* 清理失败由后续任务处理 */ }
+  }
+}
+
+function uploadedFiles(req) {
+  if (req.file) return [req.file];
+  if (Array.isArray(req.files)) return req.files;
+  return Object.values(req.files || {}).flat();
+}
+
+// 关键格式魔数校验改在落盘后进行，适用于作品、课程资料及课程回放的全部上传入口。
+function validateUploadedFiles(req, _res, next) {
+  try {
+    for (const file of uploadedFiles(req)) {
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (!MAGIC_CHECKED_EXT.has(ext)) continue;
+      const head = fs.readFileSync(file.path).subarray(0, 16);
+      if (!MAGIC_CHECK[ext](head)) {
+        removeFile(file);
+        const err = new Error(`文件内容与扩展名不符（${ext}）`);
+        err.status = 400;
+        return next(err);
+      }
     }
-  };
-  const onEnd = () => {
-    done(checker(head), `文件过小或无法读取文件头（${ext}）`);
-  };
-  const onErr = () => done(false, `读取文件失败（${ext}）`);
-  file.stream.on('data', onData);
-  file.stream.on('end', onEnd);
-  file.stream.on('error', onErr);
+    return next();
+  } catch (cause) {
+    for (const file of uploadedFiles(req)) removeFile(file);
+    const err = new Error('读取上传文件失败');
+    err.status = 400;
+    return next(err);
+  }
 }
 
 const uploadWork = multer({
@@ -153,4 +158,4 @@ const uploadImport = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-module.exports = { uploadWork, uploadResource, uploadReplay, uploadImport, UPLOAD_ROOT };
+module.exports = { uploadWork, uploadResource, uploadReplay, uploadImport, validateUploadedFiles, UPLOAD_ROOT };
