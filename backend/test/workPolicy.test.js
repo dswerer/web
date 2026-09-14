@@ -43,6 +43,7 @@ before(async () => {
   insertUser.run(5, 'student_b', pwd, '学生B', 'student', 2, 2);
   insertUser.run(6, 'mentor_a', pwd, '导师A', 'academic_mentor', null, null);
   insertUser.run(7, 'mentor_b', pwd, '导师B', 'academic_mentor', null, null);
+  insertUser.run(8, 'student_legacy', pwd, '历史学生', 'student', 1, 1);
   db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(2, 4);
   db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(3, 5);
 
@@ -70,6 +71,7 @@ before(async () => {
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (2, 4, 2, 6)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (3, 4, 3, 1)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (4, 5, 2, 6)").run();
+  db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (5, 8, 1, 6)").run();
 
   const insertWork = db.prepare(`
     INSERT INTO works (id, student_id, enrollment_id, task_id, title, file_path, review_status, parent_work_id, version)
@@ -81,6 +83,7 @@ before(async () => {
   insertWork.run(4, 5, 4, null, '乙校已通过作品', '/tmp/pbl-w4.pdf', 'approved', null, 1);
   insertWork.run(5, 4, 3, null, '管理员课程作品', '/tmp/pbl-w5.pdf', 'pending', null, 1);
   insertWork.run(6, 4, null, null, '遗留无课程作品', '/tmp/pbl-w6.pdf', 'approved', null, 1);
+  insertWork.run(12, 8, 5, 1, '未分配学生待审作品', '/tmp/pbl-w12.pdf', 'pending', null, 1);
 
   await new Promise((resolve) => {
     server = app.listen(0, resolve);
@@ -138,7 +141,7 @@ function uploadWork(token, form) {
 test('教师作品列表仅包含负责学生的全部有效报名作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const listA = await (await authed(tokenA, 'GET', '/api/works', null)).json();
-  assert.deepEqual(listA.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3, 5], '甲老师应看到负责学生的全部有效报名作品');
+  assert.deepEqual(listA.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3, 5, 12], '甲老师应看到负责学生与本校未分配学生的关联报名作品');
 
   const tokenB = await tokenFor('乙老师');
   const listB = await (await authed(tokenB, 'GET', '/api/works', null)).json();
@@ -163,6 +166,13 @@ test('教师Dashboard动态包含负责学生的全部状态作品', async () =>
   assert.ok(dash.recentWorks.every((w) => !('file_path' in w)));
 });
 
+test('教师可查看并批改本校未分配学生的关联报名作品', async () => {
+  const token = await tokenFor('甲老师');
+  assert.equal((await authed(token, 'GET', '/api/works/12', null)).status, 200);
+  const review = await authed(token, 'POST', '/api/works/12/review', { status: 'rejected', comment: '请补充实验记录' });
+  assert.equal(review.status, 200);
+});
+
 test('学生Dashboard作品DTO不含file_path', async () => {
   const token = await tokenFor('学生A');
   const dash = await (await authed(token, 'GET', '/api/dashboard', null)).json();
@@ -173,7 +183,7 @@ test('导师作品列表按课程归属（创建者或授课人）', async () =>
   const tokenA = await tokenFor('导师A');
   const listA = await (await authed(tokenA, 'GET', '/api/works', null)).json();
   const idsA = listA.works.map((w) => w.id).sort((a, b) => a - b);
-  assert.deepEqual(idsA, [1, 2, 3, 4], '导师A可见自己课程作品，不含管理员课程与遗留无课程作品');
+  assert.deepEqual(idsA, [1, 2, 3, 4, 12], '导师A可见自己课程作品，不含管理员课程与遗留无课程作品');
 
   const tokenB = await tokenFor('导师B');
   const listB = await (await authed(tokenB, 'GET', '/api/works', null)).json();
