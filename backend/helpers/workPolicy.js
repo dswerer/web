@@ -1,25 +1,26 @@
 // 作品权限策略（决策 D-1/D-2/D-6）。
-// work 行需携带：student_id / student_school_id / review_status / enrollment_id / course_id / has_newer_version。
+// work 行需携带：student_id / student_teacher_id / review_status / enrollment_id / course_id / has_newer_version。
 const { courseBelongsToMentor } = require('./courseScope');
 
-// 评审：admin 全部；导师仅自己课程（含授课归属）；其余角色不可
+// 评审：admin 全部；导师仅自己课程（含授课归属）；教师仅负责学生的关联报名作品
 function canReviewWork(user, work) {
   if (user.role === 'admin') return true;
-  if (user.role !== 'academic_mentor') return false;
   // 遗留无报名关联的作品（enrollment_id/course_id 缺失）按决策 D-2：仅管理员可见
   if (!work.enrollment_id || !work.course_id) return false;
+  if (user.role === 'teacher') return work.student_teacher_id === user.id;
+  if (user.role !== 'academic_mentor') return false;
   return courseBelongsToMentor(user.id, work.course_id);
 }
 
-// 查看：admin 全部；导师=可评审范围；学生=本人；教师=本校+已通过（无报名关联的遗留作品按 D-2 不可见）
+// 查看：admin 全部；导师=可评审范围；学生=本人；教师=负责学生的全部已关联报名作品
 function canViewWork(user, work) {
   if (user.role === 'admin') return true;
   if (user.role === 'academic_mentor') return canReviewWork(user, work);
   if (user.role === 'student') return work.student_id === user.id;
-  return user.role === 'teacher' && !!user.school_id
-    && work.student_school_id === user.school_id
-    && work.review_status === 'approved'
-    && !!work.enrollment_id;
+  return user.role === 'teacher'
+    && work.student_teacher_id === user.id
+    && !!work.enrollment_id
+    && !!work.course_id;
 }
 
 // 删除（决策 D-6）：学生可删 pending 或被打回的最新版本；

@@ -79,9 +79,9 @@ exports.list = (req, res) => {
     }
 
     if (isTeacher(req.user.role)) {
-      // 教师仅可见本校已通过评审的作品（决策 D-1）；无报名关联的遗留作品按 D-2 不可见
-      sql += " AND w.review_status = 'approved' AND u.school_id = ? AND w.enrollment_id IS NOT NULL";
-      params.push(req.user.school_id || 0);
+      // 教师仅可见负责学生的作品；无报名关联的遗留作品不进入列表
+      sql += ' AND u.teacher_id = ? AND w.enrollment_id IS NOT NULL AND c.id IS NOT NULL';
+      params.push(req.user.id);
     } else if (req.user.role === 'academic_mentor') {
       // 导师仅可见自己课程的作品（创建者或授课人，决策 D-1）；
       // 遗留无报名关联的作品（c.id 为 NULL）按决策 D-2 不进入导师列表
@@ -282,7 +282,7 @@ exports.detail = (req, res) => {
               EXISTS (SELECT 1 FROM works newer
                 WHERE newer.parent_work_id = COALESCE(w.parent_work_id, w.id)
                   AND newer.version > w.version) AS has_newer_version,
-              t.title as task_title, u.school_id as student_school_id, c.status as course_status, c.id AS course_id
+              t.title as task_title, u.teacher_id as student_teacher_id, c.status as course_status, c.id AS course_id
        FROM works w
        JOIN users u ON w.student_id = u.id
        LEFT JOIN enrollments e ON w.enrollment_id = e.id
@@ -303,8 +303,7 @@ exports.detail = (req, res) => {
     work.file_name = decodeOriginalName(work.file_name);
     const rootId = work.parent_work_id || work.id;
     const versions = db.prepare(`SELECT id, version, title, review_status, created_at FROM works WHERE id=? OR parent_work_id=? ORDER BY version DESC`).all(rootId, rootId);
-    res.json({ title: work.title, work: toFileDto(work), review,
-      versions: isTeacher(req.user.role) ? versions.filter((v) => v.review_status === 'approved') : versions });
+    res.json({ title: work.title, work: toFileDto(work), review, versions });
   } catch (err) {
     console.error('作品详情错误:', err);
     res.status(500).json({ error: '操作失败，请稍后重试' });
@@ -314,7 +313,7 @@ exports.detail = (req, res) => {
 exports.download = (req, res) => {
   try {
     const work = db.prepare(`
-      SELECT w.*, u.school_id AS student_school_id, c.status AS course_status, c.id AS course_id
+      SELECT w.*, u.teacher_id AS student_teacher_id, c.status AS course_status, c.id AS course_id
       FROM works w
       JOIN users u ON u.id = w.student_id
       LEFT JOIN enrollments e ON e.id = w.enrollment_id
@@ -421,7 +420,7 @@ exports.reject = (req, res) => {
 exports.review = (req, res) => {
   try {
     const work = db.prepare(`
-      SELECT w.*, u.school_id, e.course_id AS course_id
+      SELECT w.*, u.teacher_id AS student_teacher_id, e.course_id AS course_id
       FROM works w
       JOIN users u ON u.id = w.student_id
       LEFT JOIN enrollments e ON e.id = w.enrollment_id

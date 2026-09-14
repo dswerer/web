@@ -43,14 +43,15 @@ function loadStudentArchive(studentId, user) {
     : null;
 
   const works = db.prepare(`
-      SELECT w.*, u.school_id AS student_school_id, c.id AS course_id
+      SELECT w.*, u.teacher_id AS student_teacher_id, c.id AS course_id
       FROM works w
       JOIN users u ON u.id = w.student_id
       LEFT JOIN enrollments e ON e.id = w.enrollment_id
       LEFT JOIN courses c ON c.id = e.course_id
       WHERE w.student_id = ? ORDER BY w.created_at DESC`
   ).all(studentId)
-    .filter((work) => canViewWork(user, work))
+    .filter((work) => canViewWork(user, work)
+      && (user.role !== 'teacher' || work.review_status === 'approved'))
     .map(toFileDto);
 
   const reflections = db.prepare(

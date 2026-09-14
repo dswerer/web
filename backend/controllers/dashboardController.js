@@ -126,9 +126,9 @@ exports.index = (req, res) => {
         JOIN users u ON w.student_id = u.id
         LEFT JOIN enrollments e ON w.enrollment_id = e.id
         LEFT JOIN courses c ON e.course_id = c.id
-        WHERE u.school_id = ? AND w.review_status = 'approved'
+        WHERE u.teacher_id = ? AND w.enrollment_id IS NOT NULL AND c.id IS NOT NULL
         ORDER BY w.created_at DESC LIMIT 10
-      `).all(user.school_id || 0) : db.prepare(`
+      `).all(user.id) : db.prepare(`
         SELECT w.*, u.real_name as student_name, c.title as course_title
         FROM works w
         JOIN users u ON w.student_id = u.id

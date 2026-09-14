@@ -16,6 +16,6 @@ router.get('/:id/download', controller.download);
 router.get('/:id', controller.detail);
 router.delete('/:id', controller.delete);
 router.post('/:id/reject', requireRole('admin'), controller.reject);
-router.post('/:id/review', requireRole('admin', 'academic_mentor'), controller.review);
+router.post('/:id/review', requireRole('admin', 'academic_mentor', 'teacher'), controller.review);
 
 module.exports = router;

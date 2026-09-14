@@ -31,10 +31,10 @@ export default function WorkList() {
     { title: '学生', dataIndex: 'student_name' }, { title: '课程', dataIndex: 'course_title' }, { title: '任务', dataIndex: 'task_title' },
     { title: '状态', dataIndex: 'review_status', render: (_, row) => <Tag color={getStatus(row)[0]}>{getStatus(row)[1]}</Tag> },
     { title: '提交时间', dataIndex: 'created_at', render: formatBeijingTime },
-    { title: '操作', render: (_, row) => <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/works/${row.id}`)}>查看</Button> },
+    { title: '操作', render: (_, row) => <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/works/${row.id}`)}>{user?.role === 'teacher' && row.review_status === 'pending' ? '批改' : '查看'}</Button> },
   ];
 
-  return <div><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}><Title level={4} style={{ margin: 0 }}>📫 作品管理</Title></div>
+  return <div><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}><Title level={4} style={{ margin: 0 }}>{user?.role === 'teacher' ? '📫 负责学生作品' : '📫 作品管理'}</Title></div>
     {user?.role === 'student' && <Card size="small" title={`待办任务（${tasks.length}）`} style={{ marginBottom: 16 }}><List dataSource={tasks} locale={{ emptyText: '暂无待提交任务' }} renderItem={(task) => <List.Item actions={[<Button type="link" onClick={() => navigate(`/works/upload?task_id=${task.id}&enrollment_id=${task.enrollment_id}`)}>提交作品</Button>]}><List.Item.Meta title={task.title} description={`${task.course_title} · ${task.description || '暂无任务简介'}`} /></List.Item>} /></Card>}
     <Card><Space style={{ marginBottom: 16 }}><Input.Search placeholder="搜索作品" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 300 }} /><Select allowClear placeholder="按课程筛选" value={courseId} onChange={setCourseId} style={{ width: 200 }} options={courses.map((c) => ({ label: c.title, value: c.id }))} /></Space><Table dataSource={works} columns={columns} rowKey="id" loading={loading} pagination={{ pageSize: 10 }} scroll={{ x: 800 }} /></Card></div>;
 }

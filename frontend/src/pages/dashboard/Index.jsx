@@ -126,10 +126,10 @@ export default function Dashboard() {
 
         {data.recentWorks && data.recentWorks.length > 0 && (
           <Col xs={24} lg={12}>
-            <Card title="最近作品" style={{ marginBottom: 16 }}>
+            <Card title={user?.role === 'teacher' ? '负责学生的最近作品' : '最近作品'} extra={user?.role === 'teacher' && <Button type="link" onClick={() => navigate('/works')}>查看全部</Button>} style={{ marginBottom: 16 }}>
               <List dataSource={data.recentWorks.slice(0, 5)} renderItem={(w) => (
                 <List.Item>
-                  <List.Item.Meta title={<Link to={`/works/${w.id}`}>{w.title}</Link>} description={`${w.student_name} · ${w.course_title || '—'}`} />
+                  <List.Item.Meta title={<Link to={`/works/${w.id}`}>{w.title}</Link>} description={`${w.student_name} · ${w.course_title || '—'} · ${w.review_status === 'pending' ? '待批改' : w.review_status === 'approved' ? '已通过' : '需修改'}`} />
                 </List.Item>
               )} />
             </Card>
