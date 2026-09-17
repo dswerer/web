@@ -1,10 +1,11 @@
 const db = require('../config/database');
+const { mentorStudentScope } = require('../policies/studentPolicy');
 
 function makeRoleGroups() {
   return { teacher: [], student: [] };
 }
 
-function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExecutive = false, classId = null, schoolId = null } = {}) {
+function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExecutive = false, classId = null, schoolId = null, mentorId = null } = {}) {
   const placeholders = roles.map(() => '?').join(',');
   const params = roles.slice();
   let sql = `
@@ -19,6 +20,10 @@ function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExe
   if (search) {
     sql += ' AND (u.real_name LIKE ? OR u.username LIKE ?)';
     params.push(`%${search}%`, `%${search}%`);
+  }
+  if (mentorId !== null) {
+    sql += ` AND ${mentorStudentScope()}`;
+    params.push(mentorId);
   }
   if (classId) {
     sql += ' AND u.class_id = ?';
@@ -71,7 +76,7 @@ function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExe
     }
   }
 
-  if (search) {
+  if (search || mentorId !== null) {
     for (const school of tree.schools) {
       school.classes = school.classes.filter((cls) => cls.roles.teacher.length > 0 || cls.roles.student.length > 0);
     }

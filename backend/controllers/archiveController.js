@@ -4,6 +4,7 @@ const { buildUserTree } = require('../helpers/userTree');
 const { sanitizeUser } = require('../helpers/userDto');
 const { toFileDto } = require('../helpers/fileDto');
 const { todayInBeijing } = require('../helpers/date');
+const { mentorStudentScope, canViewStudent } = require('../policies/studentPolicy');
 
 function loadStudentArchive(studentId) {
   const student = db.prepare(
@@ -62,10 +63,13 @@ exports.showExport = (req, res) => {
     const tree = buildUserTree({
       roles: ['student'],
       search: req.query.search || '',
-      schoolId: isTeacher(user.role) ? user.school_id : null
+      schoolId: isTeacher(user.role) ? user.school_id : null,
+      mentorId: user.role === 'academic_mentor' ? user.id : null,
     });
 
-    const courses = db.prepare('SELECT id, title FROM courses ORDER BY title').all();
+    const courses = user.role === 'academic_mentor'
+      ? db.prepare('SELECT id, title FROM courses WHERE created_by = ? ORDER BY title').all(user.id)
+      : db.prepare('SELECT id, title FROM courses ORDER BY title').all();
 
     res.json({ title: '成长档案导出', tree, courses, filters: req.query });
   } catch (err) {
@@ -88,6 +92,9 @@ exports.generate = (req, res) => {
       return res.status(400).json({ error: '无权查看成长档案' });
     }
 
+    if (user.role === 'academic_mentor' && !canViewStudent(user, { id: Number(studentId) })) {
+      return res.status(403).json({ error: '只能查看自己课程相关学生档案' });
+    }
     const archive = loadStudentArchive(studentId);
 
     if (!archive) {
@@ -119,6 +126,9 @@ exports.addGrowthRecord = (req, res) => {
     const description = (req.body.description || '').trim();
     const student = db.prepare("SELECT id, school_id FROM users WHERE id=? AND role='student'").get(req.body.student_id);
     if (!student || !description) return res.status(400).json({ error: '请选择学生并填写记录内容' });
+    if (req.user.role === 'academic_mentor' && !canViewStudent(req.user, student)) {
+      return res.status(403).json({ error: '只能为自己课程相关学生添加成长记录' });
+    }
     if (isTeacher(req.user.role) && student.school_id !== req.user.school_id) return res.status(403).json({ error: '无权记录该学生' });
     db.prepare("INSERT INTO growth_records (student_id,event_type,description,recorded_by) VALUES (?,'teacher',?,?)").run(student.id, description, req.user.id);
     res.json({ message: '成长记录已添加' });
@@ -161,6 +171,10 @@ exports.generateBatch = (req, res) => {
     if (search) {
       sql += ' AND (real_name LIKE ? OR username LIKE ?)';
       params.push(`%${search}%`, `%${search}%`);
+    }
+    if (user.role === 'academic_mentor') {
+      sql += ` AND ${mentorStudentScope('users.id')}`;
+      params.push(user.id);
     }
     sql += ' ORDER BY real_name';
 

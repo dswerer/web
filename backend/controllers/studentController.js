@@ -11,6 +11,7 @@ const { removeFilesAfterCommit, removeDirectoriesAfterCommit } = require('../hel
 const { generateTemporaryPassword } = require('../services/tempPasswordService');
 const orgService = require('../services/organizationService');
 const lifecycle = require('../services/studentLifecycleService');
+const { mentorStudentScope, canViewStudent } = require('../policies/studentPolicy');
 
 exports.changeStatus = (req, res) => {
   try {
@@ -104,6 +105,10 @@ exports.list = (req, res) => {
     }
 
     if (req.query.school_id) { sql += ' AND u.school_id = ?'; params.push(req.query.school_id); }
+    if (req.user.role === 'academic_mentor') {
+      sql += ` AND ${mentorStudentScope()}`;
+      params.push(req.user.id);
+    }
     if (req.query.class_id) { sql += ' AND u.class_id = ?'; params.push(req.query.class_id); }
     if (req.query.search) {
       sql += ' AND (u.real_name LIKE ? OR u.username LIKE ?)';
@@ -736,6 +741,9 @@ exports.detail = (req, res) => {
     }
 
     if (target.role === 'student') {
+      if (viewer.role === 'academic_mentor' && !canViewStudent(viewer, target)) {
+        return res.status(403).json({ error: '只能查看自己课程相关学生' });
+      }
       // 学生目标：本人或教职工可查看（教师限本校）
       if (viewer.role === 'student' && Number(id) !== viewer.id) {
         return res.status(400).json({ error: '无权查看该学生档案' });

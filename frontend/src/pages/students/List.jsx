@@ -323,6 +323,7 @@ export default function StudentList() {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddModal(true)}>添加学生</Button>
         )}
       </div>
+      {user?.role === 'academic_mentor' && <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>仅显示您创建的课程中有报名记录的学生（含历史报名）。向课程导入新学生，请到课程详情操作。</Text>}
       <Card>
         <Input.Search placeholder="搜索学生" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 300, marginBottom: 16 }} />
         <Table dataSource={Array.isArray(data) ? data : []} columns={columns} rowKey="id" loading={loading} pagination={{ pageSize: 10 }} scroll={{ x: 800 }} />
