@@ -1,5 +1,5 @@
 // 批次C：作品权限与版本治理回归测试
-// 覆盖：教师本校approved范围、导师课程归属（创建者/授课人）、评审范围、删除矩阵、
+// 覆盖：教师负责学生作品范围、导师课程归属（创建者/授课人）、评审范围、删除矩阵、
 //       根唯一约束、作品计数、DTO脱敏、时间轴work_id事件、遗留NULL数据可见性
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -10,10 +10,12 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 
 const testDbPath = path.join(os.tmpdir(), `pbl-workpolicy-${process.pid}-${Date.now()}.db`);
+const testUploadPath = path.join(os.tmpdir(), `pbl-workpolicy-uploads-${process.pid}-${Date.now()}`);
 const bootstrapDb = new Database(testDbPath);
 bootstrapDb.close();
 
 process.env.DB_PATH = testDbPath;
+process.env.UPLOAD_PATH = testUploadPath;
 process.env.JWT_SECRET = 'test-jwt-secret';
 process.env.NODE_ENV = 'test';
 
@@ -41,6 +43,9 @@ before(async () => {
   insertUser.run(5, 'student_b', pwd, '学生B', 'student', 2, 2);
   insertUser.run(6, 'mentor_a', pwd, '导师A', 'academic_mentor', null, null);
   insertUser.run(7, 'mentor_b', pwd, '导师B', 'academic_mentor', null, null);
+  insertUser.run(8, 'student_legacy', pwd, '历史学生', 'student', 1, 1);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(2, 4);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(3, 5);
 
   // 课程：1/2 由导师A创建；3 由管理员创建但导师B是其课时授课人（决策 D-1 归属测试）
   const insertCourse = db.prepare(`
@@ -56,11 +61,17 @@ before(async () => {
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (1, 1, '任务一', 1, 1)").run();
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (2, 1, '任务二', 2, 1)").run();
   db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (3, 1, '文字任务', 3, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (4, 1, '附件任务', 4, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (5, 1, '普通文字任务', 5, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (6, 1, '空内容任务', 6, 0)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (7, 1, '强制附件任务', 7, 1)").run();
+  db.prepare("INSERT INTO tasks (id, lesson_id, title, sort_order, require_upload) VALUES (8, 1, '伪造附件任务', 8, 0)").run();
 
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (1, 4, 1, 6)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (2, 4, 2, 6)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (3, 4, 3, 1)").run();
   db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (4, 5, 2, 6)").run();
+  db.prepare("INSERT INTO enrollments (id, student_id, course_id, enrolled_by) VALUES (5, 8, 1, 6)").run();
 
   const insertWork = db.prepare(`
     INSERT INTO works (id, student_id, enrollment_id, task_id, title, file_path, review_status, parent_work_id, version)
@@ -72,6 +83,7 @@ before(async () => {
   insertWork.run(4, 5, 4, null, '乙校已通过作品', '/tmp/pbl-w4.pdf', 'approved', null, 1);
   insertWork.run(5, 4, 3, null, '管理员课程作品', '/tmp/pbl-w5.pdf', 'pending', null, 1);
   insertWork.run(6, 4, null, null, '遗留无课程作品', '/tmp/pbl-w6.pdf', 'approved', null, 1);
+  insertWork.run(12, 8, 5, 1, '未分配学生待审作品', '/tmp/pbl-w12.pdf', 'pending', null, 1);
 
   await new Promise((resolve) => {
     server = app.listen(0, resolve);
@@ -86,6 +98,7 @@ after(() => {
     const file = testDbPath + suffix;
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
+  fs.rmSync(testUploadPath, { recursive: true, force: true });
 });
 
 async function login(realName) {
@@ -118,30 +131,47 @@ function authed(token, method, url, body) {
   });
 }
 
-test('教师作品列表仅本校已通过作品', async () => {
+function uploadWork(token, form) {
+  return fetch(`${baseUrl}/api/works`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+}
+
+test('教师作品列表仅包含负责学生的全部有效报名作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const listA = await (await authed(tokenA, 'GET', '/api/works', null)).json();
-  assert.deepEqual(listA.works.map((w) => w.id), [1], '甲老师应只看到本校approved作品');
+  assert.deepEqual(listA.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3, 5, 12], '甲老师应看到负责学生与本校未分配学生的关联报名作品');
 
   const tokenB = await tokenFor('乙老师');
   const listB = await (await authed(tokenB, 'GET', '/api/works', null)).json();
-  assert.deepEqual(listB.works.map((w) => w.id), [4], '乙老师应只看到本校approved作品');
+  assert.deepEqual(listB.works.map((w) => w.id), [4], '乙老师仅看到自己负责学生的作品');
 });
 
-test('教师详情/下载限本校已通过，历史版本仅approved', async () => {
+test('教师详情/下载限负责学生，且可查看全部历史版本', async () => {
   const token = await tokenFor('甲老师');
-  assert.equal((await authed(token, 'GET', '/api/works/4', null)).status, 403, '跨校approved不可看');
-  assert.equal((await authed(token, 'GET', '/api/works/2', null)).status, 403, '本校pending不可看');
+  assert.equal((await authed(token, 'GET', '/api/works/4', null)).status, 403, '非负责学生作品不可看');
+  assert.equal((await authed(token, 'GET', '/api/works/2', null)).status, 200, '负责学生的待批改作品可看');
+  assert.equal((await authed(token, 'GET', '/api/works/6', null)).status, 403, '无报名关联的遗留作品不可看');
   assert.equal((await authed(token, 'GET', '/api/works/4/download', null)).status, 403, '跨校不可下载');
 
-  const detail = await (await authed(token, 'GET', '/api/works/1', null)).json();
-  assert.deepEqual(detail.versions.map((v) => v.id), [1]);
+  const detail = await (await authed(token, 'GET', '/api/works/2', null)).json();
+  assert.deepEqual(detail.versions.map((v) => v.id), [3, 2]);
 });
 
-test('教师Dashboard动态仅公开作品', async () => {
+test('教师Dashboard动态包含负责学生的全部状态作品', async () => {
   const token = await tokenFor('甲老师');
   const dash = await (await authed(token, 'GET', '/api/dashboard', null)).json();
-  assert.ok(dash.recentWorks.every((w) => w.review_status === 'approved'));
+  assert.ok(dash.recentWorks.some((w) => w.review_status === 'pending'));
+  assert.ok(dash.recentWorks.every((w) => !('file_path' in w)));
+});
+
+test('教师可查看并批改本校未分配学生的关联报名作品', async () => {
+  const token = await tokenFor('甲老师');
+  assert.equal((await authed(token, 'GET', '/api/works/12', null)).status, 200);
+  const review = await authed(token, 'POST', '/api/works/12/review', { status: 'rejected', comment: '请补充实验记录' });
+  assert.equal(review.status, 200);
 });
 
 test('学生Dashboard作品DTO不含file_path', async () => {
@@ -154,7 +184,7 @@ test('导师作品列表按课程归属（创建者或授课人）', async () =>
   const tokenA = await tokenFor('导师A');
   const listA = await (await authed(tokenA, 'GET', '/api/works', null)).json();
   const idsA = listA.works.map((w) => w.id).sort((a, b) => a - b);
-  assert.deepEqual(idsA, [1, 2, 3, 4], '导师A可见自己课程作品，不含管理员课程与遗留无课程作品');
+  assert.deepEqual(idsA, [1, 2, 3, 4, 12], '导师A可见自己课程作品，不含管理员课程与遗留无课程作品');
 
   const tokenB = await tokenFor('导师B');
   const listB = await (await authed(tokenB, 'GET', '/api/works', null)).json();
@@ -175,6 +205,15 @@ test('导师仅可批改自己课程作品', async () => {
 
   const tokenB = await tokenFor('导师B');
   assert.equal((await authed(tokenB, 'POST', '/api/works/2/review', { status: 'rejected' })).status, 403, '他人课程不可批改');
+});
+
+test('教师仅可批改负责学生的待批改作品', async () => {
+  const token = await tokenFor('甲老师');
+  const own = await authed(token, 'POST', '/api/works/5/review', { status: 'rejected', comment: '请补充说明' });
+  assert.equal(own.status, 200, '教师可批改负责学生的待批改作品');
+
+  const other = await authed(token, 'POST', '/api/works/4/review', { status: 'rejected' });
+  assert.equal(other.status, 403, '教师不可批改非负责学生的作品');
 });
 
 test('作品删除矩阵', async () => {
@@ -228,4 +267,43 @@ test('文字任务提交写入work_id成长事件并拒绝重复根', async () =
 
   const second = await authed(token, 'POST', '/api/works', { task_id: 3, title: '重复提交', description: '内容' });
   assert.equal(second.status, 400, '预检应拒绝重复根提交');
+});
+
+test('学生提交作品支持仅附件或仅文字，并保留空内容和文件签名校验', async () => {
+  const token = await tokenFor('学生A');
+
+  const attachmentOnly = new FormData();
+  attachmentOnly.append('task_id', '4');
+  attachmentOnly.append('title', '仅附件作品');
+  attachmentOnly.append('file', new Blob(['%PDF-1.4\n附件内容'], { type: 'application/pdf' }), '成果.pdf');
+  const attachmentResult = await uploadWork(token, attachmentOnly);
+  assert.equal(attachmentResult.status, 200, '仅附件应能提交');
+  const attachmentBody = await attachmentResult.json();
+  const attachmentWork = db.prepare('SELECT file_path, file_name, description FROM works WHERE id = ?').get(attachmentBody.id);
+  assert.equal(attachmentWork.description, null);
+  assert.equal(attachmentWork.file_name, '成果.pdf');
+  assert.ok(fs.existsSync(attachmentWork.file_path), '附件应被保存');
+
+  const textOnly = new FormData();
+  textOnly.append('task_id', '5');
+  textOnly.append('title', '仅文字作品');
+  textOnly.append('description', '这是成果说明');
+  assert.equal((await uploadWork(token, textOnly)).status, 200, '仅文字应能提交非强制附件任务');
+
+  const empty = new FormData();
+  empty.append('task_id', '6');
+  empty.append('title', '空内容作品');
+  assert.equal((await uploadWork(token, empty)).status, 400, '文字和附件均为空应被拒绝');
+
+  const requiredAttachment = new FormData();
+  requiredAttachment.append('task_id', '7');
+  requiredAttachment.append('title', '文字提交作品');
+  requiredAttachment.append('description', '只有文字');
+  assert.equal((await uploadWork(token, requiredAttachment)).status, 200, '历史强制附件配置不应阻止仅文字提交');
+
+  const forgedAttachment = new FormData();
+  forgedAttachment.append('task_id', '8');
+  forgedAttachment.append('title', '伪造附件作品');
+  forgedAttachment.append('file', new Blob(['不是 PDF'], { type: 'application/pdf' }), '伪造.pdf');
+  assert.equal((await uploadWork(token, forgedAttachment)).status, 400, '伪造文件签名仍应被拒绝');
 });

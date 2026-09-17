@@ -41,6 +41,8 @@ before(async () => {
   insertUser.run(5, 'student_b', pwd, '学生B', 'student', 2, 2);
   insertUser.run(6, 'mentor_a', pwd, '导师A', 'academic_mentor', null, null);
   insertUser.run(7, 'mentor_b', pwd, '导师B', 'academic_mentor', null, null);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(2, 4);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(3, 5);
 
   const insertCourse = db.prepare(`
     INSERT INTO courses (id, title, grade_level, difficulty, status, created_by)
