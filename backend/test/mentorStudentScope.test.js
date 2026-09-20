@@ -29,22 +29,42 @@ before(async () => {
   }
   const rows = [[1,'admin','admin',null],[2,'mentor_a','academic_mentor',null],[3,'mentor_b','academic_mentor',null],
     [4,'teacher','teacher',1],[5,'own','student',1],[6,'other','student',1],[7,'none','student',1],
-    [8,'historical','student',2],[9,'archived','student',1],[10,'mentor_empty','academic_mentor',null]];
+    [8,'historical','student',2],[9,'archived','student',1],[10,'mentor_empty','academic_mentor',null],
+    [11,'media','media',null]];
   for (const [id,name,role,school] of rows) db.prepare('INSERT INTO users (id,username,real_name,role,school_id,class_id,password_hash) VALUES (?,?,?,?,?,?,?)')
     .run(id,name,name,role,school,school,bcrypt.hashSync('user123',4));
   db.prepare('UPDATE users SET teacher_id = 4 WHERE id IN (5, 8, 9)').run();
   db.prepare("UPDATE users SET is_active=0,archived_at=CURRENT_TIMESTAMP WHERE id=9").run();
   for (const [id,owner,status] of [[1,2,'published'],[2,3,'published'],[3,2,'draft'],[4,2,'archived']]) {
     db.prepare("INSERT INTO courses (id,title,created_by,status,grade_level,difficulty) VALUES (?,?,?,?,'primary','basic')").run(id,`课程${id}`,owner,status);
+    db.prepare('UPDATE courses SET theme = ? WHERE id = ?').run(`主题${id}`,id);
   }
   for (const [student,course,status] of [[5,1,'active'],[5,3,'active'],[6,2,'active'],[8,4,'removed'],[9,1,'active']]) {
     db.prepare('INSERT INTO enrollments (student_id,course_id,status) VALUES (?,?,?)').run(student,course,status);
   }
   server = app.listen(0,'127.0.0.1'); await new Promise(r=>server.once('listening',r));
   base=`http://127.0.0.1:${server.address().port}`;
-  for (const name of ['admin','mentor_a','mentor_b','teacher','own','mentor_empty']) tokens[name]=(await api('/auth/login',null,{username:name,password:'user123'})).body.token;
+  for (const name of ['admin','mentor_a','mentor_b','teacher','own','mentor_empty','media']) tokens[name]=(await api('/auth/login',null,{username:name,password:'user123'})).body.token;
 });
 after(async()=>{await new Promise(r=>server.close(r));db.close();fs.rmSync(dir,{recursive:true,force:true});});
+
+test('导师工作台统计限于负责课程；新媒体只能读取已发布课程列表',async()=>{
+  assert.deepEqual((await api('/dashboard',tokens.mentor_a)).body.stats,
+    {schoolCount:2,userCount:3,courseCount:3,workCount:0});
+  assert.deepEqual((await api('/dashboard',tokens.mentor_b)).body.stats,
+    {schoolCount:1,userCount:1,courseCount:1,workCount:0});
+  assert.deepEqual((await api('/dashboard',tokens.mentor_empty)).body.stats,
+    {schoolCount:0,userCount:0,courseCount:0,workCount:0});
+  assert.equal((await api('/dashboard',tokens.admin)).body.stats.courseCount,4);
+  assert.equal((await api('/courses',tokens.teacher)).status,403);
+  const mediaCourses=(await api('/courses',tokens.media)).body.courses;
+  assert.deepEqual(ids(mediaCourses),[1,2]);
+  assert.ok(mediaCourses.every((course)=>course.student_count===undefined && course.creator_name===undefined));
+  assert.deepEqual((await api('/courses',tokens.media)).body.themes.map((item)=>item.theme).sort(),['主题1','主题2']);
+  assert.deepEqual((await api('/courses',tokens.mentor_a)).body.themes.map((item)=>item.theme).sort(),['主题1','主题3','主题4']);
+  assert.deepEqual((await api('/courses',tokens.own)).body.themes.map((item)=>item.theme),['主题1']);
+  assert.notEqual((await api('/courses/1',tokens.media)).status,200);
+});
 
 test('导师列表仅有课程相关学生，历史/归档关系保留，多课程不重复，搜索无法扩大权限',async()=>{
   assert.deepEqual(ids((await api('/students')).body.students),[5,8,9]);

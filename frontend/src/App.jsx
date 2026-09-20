@@ -83,7 +83,7 @@ function App() {
                 <Route path="glider" element={guard(<GliderSimulator />, ['admin', 'academic_mentor', 'student'])} />
                 <Route path="courses" element={guard(<CourseList />, ['admin', 'academic_mentor', 'student', 'media'])} />
                 <Route path="courses/create" element={guard(<CourseForm />, ['admin', 'academic_mentor'])} />
-                <Route path="courses/:id" element={guard(<CourseDetail />, ['admin', 'academic_mentor', 'student', 'media'])} />
+                <Route path="courses/:id" element={guard(<CourseDetail />, ['admin', 'academic_mentor', 'student'])} />
                 <Route path="courses/:id/learn" element={guard(<Learning />, ['student'])} />
                 <Route path="courses/:courseId/lessons/:lessonId/learn" element={guard(<LessonLearn />, ['student'])} />
                 <Route path="courses/:courseId/lessons/:lessonId/content" element={guard(<LessonContentEditor />, ['admin', 'academic_mentor'])} />

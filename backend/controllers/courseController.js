@@ -74,8 +74,13 @@ exports.list = (req, res) => {
 
     sql += ' ORDER BY c.updated_at DESC';
 
-    const courses = db.prepare(sql).all(...params).map((course) => ({ ...course, progress: 0, can_manage: coursePolicy.canManageCourse(req.user, course) }));
-    const themes = db.prepare('SELECT DISTINCT theme FROM courses WHERE theme IS NOT NULL').all();
+    const courses = db.prepare(sql).all(...params).map((course) => req.user.role === 'media'
+      ? { id: course.id, title: course.title, theme: course.theme, grade_level: course.grade_level,
+          difficulty: course.difficulty, status: course.status, can_manage: false }
+      : { ...course, progress: 0, can_manage: coursePolicy.canManageCourse(req.user, course) });
+    const themes = req.user.role === 'admin'
+      ? db.prepare('SELECT DISTINCT theme FROM courses WHERE theme IS NOT NULL').all()
+      : [...new Set(courses.map((course) => course.theme).filter(Boolean))].map((theme) => ({ theme }));
 
     res.json({ title: '课程管理', courses, themes, filters: req.query });
   } catch (err) {

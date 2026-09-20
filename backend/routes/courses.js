@@ -12,7 +12,7 @@ router.use(requireAuth);
 router.use(requirePasswordChanged);
 
 // 课程 CRUD
-router.get('/', controller.list);
+router.get('/', requireRole('admin', 'academic_mentor', 'student', 'media'), controller.list);
 router.post('/', requireRole('admin', 'academic_mentor'), controller.create);
 router.get('/resources/:resource_id/download', controller.downloadResource);
 router.delete('/resources/:resource_id', requireRole('admin', 'academic_mentor'), controller.deleteResource);
