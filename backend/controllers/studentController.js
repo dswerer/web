@@ -13,7 +13,7 @@ const { loadStudentArchive } = require('./archiveController');
 const { generateTemporaryPassword } = require('../services/tempPasswordService');
 const orgService = require('../services/organizationService');
 const lifecycle = require('../services/studentLifecycleService');
-const { mentorStudentScope, canViewStudent } = require('../policies/studentPolicy');
+const { mentorStudentScope, mentorStudentParams, canViewStudent } = require('../policies/studentPolicy');
 
 exports.changeStatus = (req, res) => {
   try {
@@ -102,14 +102,14 @@ exports.list = (req, res) => {
     const params = [];
 
     if (isTeacher(req.user.role)) {
-      sql += ' AND u.school_id = ?';
-      params.push(req.user.school_id || 0);
+      sql += ' AND u.teacher_id = ?';
+      params.push(req.user.id);
     }
 
     if (req.query.school_id) { sql += ' AND u.school_id = ?'; params.push(req.query.school_id); }
     if (req.user.role === 'academic_mentor') {
       sql += ` AND ${mentorStudentScope()}`;
-      params.push(req.user.id);
+      params.push(...mentorStudentParams(req.user.id));
     }
     if (req.query.class_id) { sql += ' AND u.class_id = ?'; params.push(req.query.class_id); }
     if (req.query.search) {
@@ -121,7 +121,9 @@ exports.list = (req, res) => {
 
     const students = db.prepare(sql).all(...params);
     const schools = isTeacher(req.user.role)
-      ? db.prepare('SELECT id, name FROM schools WHERE id = ? ORDER BY name').all(req.user.school_id || 0)
+      ? db.prepare(`SELECT DISTINCT s.id, s.name FROM schools s
+          JOIN users u ON u.school_id = s.id
+          WHERE u.role = 'student' AND u.teacher_id = ? ORDER BY s.name`).all(req.user.id)
       : db.prepare('SELECT id, name FROM schools ORDER BY name').all();
 
     res.json({ title: '学生管理', students, schools, filters: req.query });
@@ -779,8 +781,11 @@ exports.detail = (req, res) => {
         `).all(target.id);
       } else if (target.role === 'academic_mentor') {
         managedCourses = db.prepare(
-          'SELECT id, title, status FROM courses WHERE created_by = ? ORDER BY updated_at DESC'
-        ).all(target.id);
+          `SELECT c.id, c.title, c.status FROM courses c
+           WHERE c.created_by = ? OR EXISTS (
+             SELECT 1 FROM lessons l WHERE l.course_id = c.id AND l.instructor_id = ?
+           ) ORDER BY c.updated_at DESC`
+        ).all(target.id, target.id);
       }
       return res.json({
         title: `${safeTarget.real_name} - 用户详情`,

@@ -87,7 +87,7 @@ export default function ArchiveIndex() {
   return (
     <div>
       <Title level={4}>📂 成长档案</Title>
-      {user?.role === 'academic_mentor' && <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>仅展示您创建的课程相关学生，包含历史报名关系；停用或归档不会删除历史档案。</Text>}
+      {user?.role === 'academic_mentor' && <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>仅展示您创建或受邀授课的课程相关学生，包含历史报名关系；停用或归档不会删除历史档案。</Text>}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <Card title="学生列表" style={{ width: 320, flex: '0 0 320px', maxWidth: '100%', maxHeight: '70vh', overflow: 'auto' }}>
           {treeData.length ? <Tree treeData={treeData} onSelect={handleSelect} showIcon defaultExpandAll={false} /> : <Text type="secondary">暂无可查看的学生</Text>}

@@ -32,6 +32,7 @@ before(async () => {
     [8,'historical','student',2],[9,'archived','student',1],[10,'mentor_empty','academic_mentor',null]];
   for (const [id,name,role,school] of rows) db.prepare('INSERT INTO users (id,username,real_name,role,school_id,class_id,password_hash) VALUES (?,?,?,?,?,?,?)')
     .run(id,name,name,role,school,school,bcrypt.hashSync('user123',4));
+  db.prepare('UPDATE users SET teacher_id = 4 WHERE id IN (5, 8, 9)').run();
   db.prepare("UPDATE users SET is_active=0,archived_at=CURRENT_TIMESTAMP WHERE id=9").run();
   for (const [id,owner,status] of [[1,2,'published'],[2,3,'published'],[3,2,'draft'],[4,2,'archived']]) {
     db.prepare("INSERT INTO courses (id,title,created_by,status,grade_level,difficulty) VALUES (?,?,?,?,'primary','basic')").run(id,`课程${id}`,owner,status);
@@ -87,11 +88,15 @@ test('无关学生不能添加成长记录；导师仍可向自己的课程搜�
   assert.equal((await api('/courses/2/enroll/candidates')).status,403);
 });
 
-test('管理员、教师本校范围、学生本人档案维持原有行为',async()=>{
+test('管理员全量、教师明确分配范围、学生本人档案',async()=>{
   const admin=(await api('/students',tokens.admin)).body.tree;
   assert.deepEqual(ids(treeStudents(admin)),[5,6,7,8,9]);
-  assert.deepEqual(ids((await api('/students',tokens.teacher)).body.students),[5,6,7,9]);
-  assert.equal((await api('/archives/generate?student_id=8',tokens.teacher)).status,403);
+  assert.deepEqual(ids((await api('/students',tokens.teacher)).body.students),[5,8,9]);
+  assert.deepEqual(ids(treeStudents((await api('/archives/tree',tokens.teacher)).body.tree)),[5,8,9]);
+  assert.deepEqual(ids((await api('/archives/generate-batch?school_id=1',tokens.teacher)).body.archives.map(a=>a.student)),[5,9]);
+  assert.deepEqual(ids((await api('/archives/generate-batch?school_id=2',tokens.teacher)).body.archives.map(a=>a.student)),[8]);
+  assert.equal((await api('/archives/generate?student_id=8',tokens.teacher)).status,200);
+  assert.equal((await api('/archives/generate?student_id=6',tokens.teacher)).status,403);
   assert.equal((await api('/archives/generate?student_id=6',tokens.admin)).status,200);
   const own=await api('/archives/generate?student_id=6',tokens.own);
   assert.equal(own.status,200);assert.equal(own.body.student.id,5);

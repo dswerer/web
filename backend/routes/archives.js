@@ -9,11 +9,11 @@ router.use(requirePasswordChanged);
 router.get('/tree', controller.showExport);
 router.get('/generate', controller.generate);
 router.get('/generate-batch', controller.generateBatch);
-router.post('/growth-records', requireRole('admin', 'academic_mentor', 'teacher'), controller.addGrowthRecord);
+router.post('/growth-records', requireRole('admin', 'academic_mentor'), controller.addGrowthRecord);
 // 反思日志仅限学生本人
 router.get('/reflection', requireRole('student'), controller.showReflection);
 router.post('/reflection', requireRole('student'), controller.submitReflection);
-// 课程评价仅由执行导师/管理员写入；教师可为本校学生添加成长观察。
+// 课程评价和成长记录仅由执行导师/管理员写入；教师只读观察。
 router.post('/evaluation', requireRole('admin', 'academic_mentor'), controller.submitEvaluation);
 
 module.exports = router;

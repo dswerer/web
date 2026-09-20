@@ -94,3 +94,16 @@ test('本人课程及管理员跨课程管理仍可用，候选学生保留全�
   assert.equal((await api('/courses/2','PUT',{title:'管理员修改他人课程'},tokens.admin)).status,200);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM enrollments').get().c,3);
 });
+
+test('受邀授课导师可管理该课程，其他课程仍无权限', async () => {
+  db.prepare('UPDATE lessons SET instructor_id = ? WHERE id = ?').run(2, 2);
+  assert.equal(canManageCourse({ id: 2, role: 'academic_mentor' }, { id: 2, created_by: 3 }), true);
+  const list = await api('/courses');
+  assert.deepEqual(list.body.courses.filter((c) => c.can_manage).map((c) => c.id).sort(), [1, 2]);
+  assert.equal((await api('/courses/2')).body.course.can_manage, true);
+  assert.equal((await api('/courses/2', 'PUT', { title: '授课导师编辑' })).status, 200);
+  assert.equal((await api('/courses/2/enroll/candidates')).status, 200);
+  const mentorProfile = await api('/students/2', 'GET', undefined, tokens.admin);
+  assert.deepEqual(mentorProfile.body.managedCourses.map((course) => course.id).sort(), [1, 2]);
+  assert.equal((await api('/courses/3', 'PUT', { title: '无关课程编辑' })).status, 403);
+});

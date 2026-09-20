@@ -19,7 +19,7 @@ function removeUploadedFile(file) {
 }
 
 function canManageCourse(user, courseId) {
-  const course = db.prepare('SELECT created_by FROM courses WHERE id = ?').get(courseId);
+  const course = db.prepare('SELECT id, created_by FROM courses WHERE id = ?').get(courseId);
   return coursePolicy.canManageCourse(user, course);
 }
 

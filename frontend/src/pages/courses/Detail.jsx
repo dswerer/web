@@ -408,16 +408,16 @@ export default function CourseDetail() {
     },
   ];
 
-  // 选课学生页签：执行导师/教师/管理员可见（学生由统一导入，日常不可退课）
-  if (course.can_enroll) {
+  // 管理者可查看报名；归档课程仍可查看历史，但不可继续导入。
+  if (course.can_manage) {
     tabItems.push({
       key: 'students',
       label: `选课学生 (${enrollments.length})`,
       children: (
         <div>
-          <Button type="dashed" icon={<PlusOutlined />} onClick={openImportModal} style={{ marginBottom: 16 }}>
+          {course.can_enroll && <Button type="dashed" icon={<PlusOutlined />} onClick={openImportModal} style={{ marginBottom: 16 }}>
             导入学生
-          </Button>
+          </Button>}
           <Table dataSource={enrollments} rowKey="id" pagination={false} size="small"
             columns={[
               { title: '姓名', dataIndex: 'student_name' },
