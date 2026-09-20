@@ -4,6 +4,7 @@ import { Card, Form, Input, Button, Typography, Alert, message } from 'antd';
 import { LockOutlined, KeyOutlined } from '@ant-design/icons';
 import { authAPI } from '../../api';
 import { useAuth } from '../../store/AuthContext';
+import { homeForRole } from '../../utils/roleNavigation';
 
 const { Title, Text } = Typography;
 
@@ -20,8 +21,8 @@ export default function ChangePassword() {
       await authAPI.changePassword({ old_password: values.old_password, new_password: values.new_password });
       message.success('密码修改成功');
       // 清除 force_reset_password 标志（重新拉取用户信息）
-      await refreshUser().catch(() => {});
-      navigate('/dashboard', { replace: true });
+      const updatedUser = await refreshUser().catch(() => null);
+      navigate(homeForRole(updatedUser?.role || user?.role), { replace: true });
     } catch {
       // 错误已由拦截器提示
     } finally {

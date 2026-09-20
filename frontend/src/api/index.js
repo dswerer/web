@@ -138,4 +138,36 @@ export const notificationAPI = {
   hideRead: () => client.post('/notifications/hide-read'),
 };
 
+export const learningAPI = {
+  lesson: (lessonId) => client.get(`/learning/lessons/${lessonId}`),
+  completeReview: (lessonId) => client.post(`/learning/lessons/${lessonId}/review-complete`),
+  submitExercise: (exerciseId, answer) => client.post(`/learning/exercises/${exerciseId}/submit`, { answer }),
+  completeCard: (cardId) => client.post(`/learning/cards/${cardId}/complete`),
+  submitReport: (lessonId, data) => client.post(`/learning/lessons/${lessonId}/report`, data),
+};
+
+export const learningManageAPI = {
+  lessons: () => client.get('/learning/manage/lessons'),
+  cards: (lessonId) => client.get(`/learning/manage/lessons/${lessonId}/cards`),
+  createCard: (lessonId, data) => client.post(`/learning/manage/lessons/${lessonId}/cards`, data),
+  updateCard: (cardId, data) => client.put(`/learning/manage/cards/${cardId}`, data),
+  deleteCard: (cardId) => client.delete(`/learning/manage/cards/${cardId}`),
+  reorderCards: (lessonId, card_ids) => client.post(`/learning/manage/lessons/${lessonId}/cards/reorder`, { card_ids }),
+  createExercise: (cardId, data) => client.post(`/learning/manage/cards/${cardId}/exercises`, data),
+  updateExercise: (exerciseId, data) => client.put(`/learning/manage/exercises/${exerciseId}`, data),
+  deleteExercise: (exerciseId) => client.delete(`/learning/manage/exercises/${exerciseId}`),
+};
+
+export const mentorReviewAPI = {
+  list: (params) => client.get('/mentor-reviews', { params }),
+  detail: (reportId) => client.get(`/mentor-reviews/${reportId}`),
+  review: (reportId, data) => client.post(`/mentor-reviews/${reportId}/review`, data),
+};
+
+export const observerAPI = {
+  dashboard: () => client.get('/observer'),
+  students: (params) => client.get('/observer/students', { params }),
+  student: (studentId) => client.get(`/observer/students/${studentId}`),
+};
+
 export { gliderAPI } from './glider';

@@ -32,7 +32,7 @@ export default function AppLayout() {
       <Sidebar />
       <Layout>
         <HeaderBar />
-        <Content style={{ margin: 16, padding: 24, background: '#f5f7fa', borderRadius: 8, minHeight: 360 }}>
+        <Content style={{ background: '#f5f7fa', minHeight: 360 }}>
           <Outlet />
         </Content>
       </Layout>

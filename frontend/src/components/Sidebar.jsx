@@ -21,8 +21,10 @@ const menuItems = {
   admin: [
     { key: '/dashboard', icon: <DashboardOutlined />, label: '工作台' },
     { key: '/courses', icon: <BookOutlined />, label: '课程管理' },
+    { key: '/mentor/content', icon: <BookOutlined />, label: '学习内容编排' },
     { key: '/students', icon: <TeamOutlined />, label: '用户管理' },
     { key: '/works', icon: <FileTextOutlined />, label: '作品管理' },
+    { key: '/mentor/reviews', icon: <CheckSquareOutlined />, label: '学习报告评审' },
     { key: '/archives', icon: <FolderOpenOutlined />, label: '成长档案' },
     { key: '/glider', icon: <ExperimentOutlined />, label: '滑翔机模拟实验室' },
     { key: '/dashboard/ai', icon: <RobotOutlined />, label: '灵境小智' },
@@ -32,8 +34,10 @@ const menuItems = {
   academic_mentor: [
     { key: '/dashboard', icon: <DashboardOutlined />, label: '工作台' },
     { key: '/courses', icon: <BookOutlined />, label: '课程管理' },
+    { key: '/mentor/content', icon: <BookOutlined />, label: '学习内容编排' },
     { key: '/students', icon: <TeamOutlined />, label: '学生管理' },
     { key: '/works', icon: <FileTextOutlined />, label: '作品管理' },
+    { key: '/mentor/reviews', icon: <CheckSquareOutlined />, label: '学习报告评审' },
     { key: '/archives', icon: <FolderOpenOutlined />, label: '成长档案' },
     { key: '/tasks', icon: <CheckSquareOutlined />, label: '任务总览' },
     { key: '/dashboard/ai', icon: <RobotOutlined />, label: '灵境小智' },
@@ -41,10 +45,9 @@ const menuItems = {
     { key: '/notifications', icon: <BellOutlined />, label: '通知中心' },
   ],
   teacher: [
-    { key: '/dashboard', icon: <DashboardOutlined />, label: '工作台' },
-    { key: '/students', icon: <TeamOutlined />, label: '学生管理' },
+    { key: '/observer', icon: <DashboardOutlined />, label: '观察工作台' },
+    { key: '/observer/students', icon: <TeamOutlined />, label: '我的学生' },
     { key: '/archives', icon: <FolderOpenOutlined />, label: '成长档案' },
-    { key: '/tasks', icon: <CheckSquareOutlined />, label: '任务总览' },
     { key: '/feedback', icon: <MessageOutlined />, label: '帮助与反馈' },
     { key: '/notifications', icon: <BellOutlined />, label: '通知中心' },
   ],
@@ -73,11 +76,14 @@ export default function Sidebar() {
 
   const items = menuItems[user?.role] || menuItems.student;
 
-  const selectedKey = location.pathname.startsWith('/feedback')
+  const specialKey = location.pathname.startsWith('/feedback')
     ? (user?.role === 'admin' ? '/feedback/manage' : '/feedback')
     : location.pathname.startsWith('/notifications')
       ? '/notifications'
-      : '/' + location.pathname.split('/').slice(1, 3).join('/');
+      : null;
+  const selectedKey = specialKey || items
+    .filter((item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`))
+    .sort((a, b) => b.key.length - a.key.length)[0]?.key;
 
   return (
     <Sider
@@ -93,7 +99,7 @@ export default function Sidebar() {
         height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center',
         color: '#fff', fontSize: 18, fontWeight: 700, borderBottom: '1px solid rgba(255,255,255,0.1)'
       }}>
-        {collapsed ? '🚀' : '🚀 PBL 科创平台'}
+        {collapsed ? 'PBL' : 'PBL 科创平台'}
       </div>
       <Menu
         theme="dark"

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Form, Input, Button, Card, Typography, message } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useAuth } from '../../store/AuthContext';
+import { homeForRole } from '../../utils/roleNavigation';
 
 const { Title, Text } = Typography;
 
@@ -17,7 +18,7 @@ export default function Login() {
       const user = await login(values.username, values.password);
       message.success('登录成功');
       // 若管理员重置过密码，强制先修改密码
-      navigate(user?.force_reset_password ? '/change-password' : '/dashboard');
+      navigate(user?.force_reset_password ? '/change-password' : homeForRole(user?.role), { replace: true });
     } catch {
       // 错误已在拦截器中处理
     } finally {
