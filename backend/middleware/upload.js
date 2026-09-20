@@ -60,6 +60,24 @@ function makeStorage(prefix, subdir) {
   });
 }
 
+// 关键格式魔数校验（FILE-01/E-5）：只信扩展名与 MIME 不足以防伪造
+const MAGIC_CHECKED_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.mp4', '.webm', '.zip', '.doc', '.docx', '.ppt', '.pptx']);
+const MAGIC_CHECK = {
+  '.jpg': (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  '.jpeg': (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  '.png': (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47,
+  '.gif': (b) => b.toString('ascii', 0, 4) === 'GIF8',
+  '.webp': (b) => b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP',
+  '.pdf': (b) => b.toString('ascii', 0, 4) === '%PDF',
+  '.mp4': (b) => b.length > 11 && b.toString('ascii', 4, 8) === 'ftyp',
+  '.webm': (b) => b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3,
+  '.zip': (b) => b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07),
+  '.docx': (b) => b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03,
+  '.pptx': (b) => b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03,
+  '.doc': (b) => b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0,
+  '.ppt': (b) => b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0,
+};
+
 function fileFilter(req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
 
@@ -76,7 +94,44 @@ function fileFilter(req, file, cb) {
     return cb(err, false);
   }
 
-  cb(null, true);
+  // Multer v2 的 fileFilter 阶段不再提供 file.stream；签名校验统一在文件
+  // 落盘后执行，避免访问不存在的流导致所有附件请求返回 500。
+  return cb(null, true);
+}
+
+function removeFile(file) {
+  if (file?.path) {
+    try { fs.unlinkSync(file.path); } catch (err) { /* 清理失败由后续任务处理 */ }
+  }
+}
+
+function uploadedFiles(req) {
+  if (req.file) return [req.file];
+  if (Array.isArray(req.files)) return req.files;
+  return Object.values(req.files || {}).flat();
+}
+
+// 关键格式魔数校验改在落盘后进行，适用于作品、课程资料及课程回放的全部上传入口。
+function validateUploadedFiles(req, _res, next) {
+  try {
+    for (const file of uploadedFiles(req)) {
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (!MAGIC_CHECKED_EXT.has(ext)) continue;
+      const head = fs.readFileSync(file.path).subarray(0, 16);
+      if (!MAGIC_CHECK[ext](head)) {
+        removeFile(file);
+        const err = new Error(`文件内容与扩展名不符（${ext}）`);
+        err.status = 400;
+        return next(err);
+      }
+    }
+    return next();
+  } catch (cause) {
+    for (const file of uploadedFiles(req)) removeFile(file);
+    const err = new Error('读取上传文件失败');
+    err.status = 400;
+    return next(err);
+  }
 }
 
 const uploadWork = multer({
@@ -103,4 +158,4 @@ const uploadImport = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-module.exports = { uploadWork, uploadResource, uploadReplay, uploadImport, UPLOAD_ROOT };
+module.exports = { uploadWork, uploadResource, uploadReplay, uploadImport, validateUploadedFiles, UPLOAD_ROOT };

@@ -30,7 +30,7 @@ export default function WorkDetail() {
   if (!data?.work) return <p>作品不存在</p>;
   const { work, review, versions = [] } = data;
   const isOwner = work.student_id === user?.id;
-  const canReview = ['admin', 'academic_mentor'].includes(user?.role);
+  const canReview = ['admin', 'academic_mentor', 'teacher'].includes(user?.role);
   const statusText = work.review_status === 'rejected' && work.has_newer_version ? '已修改' : work.review_status === 'pending' ? '待批改' : work.review_status === 'approved' ? '通过' : '需修改';
   const download = async () => {
     try {

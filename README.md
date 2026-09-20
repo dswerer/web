@@ -20,7 +20,9 @@
 
 - Node.js 22.12 或更高版本
 - npm 10 或更高版本
-- Python 3.11+（仅“滑翔机模拟（学生科创）”需要，详见对应章节）
+- Python 3（仅“滑翔机模拟（学生科创）”需要，详见对应章节）
+- 若要跑**真 novaPhy**：Linux x86_64 + **glibc ≥ 2.38** + CPython **3.11**（精确 3.11，3.12/3.13 不行）
+  → WSL 需 **Ubuntu 24.04+**（22.04 的 glibc 2.35 装不了）；服务器需 Ubuntu 24.04 / Debian 13 / RHEL9 系
 
 Node.js 18 不满足当前依赖要求：Vite 8 要求 Node.js 20.19+，`better-sqlite3` 13 要求 Node.js 22+。建议统一使用 Node.js 22 LTS 或更高版本。
 
@@ -58,8 +60,9 @@ project/
 ├── simulation/                  # 滑翔机仿真（生产依赖，不再使用 test_ 前缀目录）
 │   ├── glider/                  # 滑翔机气动仿真（Python）：aircraft/aero/sim_core/render/plot_flight
 │   │   └── sim_service.py       # 供平台后端 spawn 调用的 headless 服务（结果图 + MP4 回放）
-│   ├── docker/                  # novaPhy Docker 运行环境
-│   └── wsl_setup.sh             # WSL novaPhy 环境准备脚本
+│   ├── novaphy-0.4.0-cpu-cp311-linux-x86_64/  # ⚠️ novaPhy 交付包：需自行放入，不入库（见 simulation/README.md）
+│   ├── docker/                  # novaPhy Docker 运行环境（构建前需先把交付包放到 simulation/）
+│   └── wsl_setup.sh             # novaPhy 环境准备脚本（WSL / Ubuntu 服务器通用）
 ├── scripts/                     # 部署辅助脚本（doctor/backup-db/health-check）
 ├── deploy.sh                    # 一键部署脚本（测试/演示环境）
 ├── 网站使用手册.docx
@@ -116,7 +119,7 @@ DB_PATH=./database/pbl_platform.db
 
 ### 3. 初始化数据库
 
-首次本地运行时，在 `backend` 目录执行（先停止已运行的后端）：
+首次本地运行时，在 `backend` 目录执行（先停止已运行的后端）。仅在目标数据库不存在时执行（默认 `backend/database/pbl_platform.db`；设置 `DB_PATH` 时使用该路径，相对路径以 `backend` 为基准，读取 `backend/.env`）：
 
 ```powershell
 npm run db:init
@@ -126,11 +129,17 @@ npm run db:init
 
 如果数据库已有业务数据或使用记录，初始化脚本会退出，保留账号、密码和学习数据。重复执行不会覆盖旧密码。生产环境禁止执行本脚本，应使用 `db:provision`。
 
+仅启动后端会自动建表，不会创建以下默认测试账号。若首次运行时先启动了后端，会留下无测试账号的数据库；确认无需保留数据后，先停止后端，再执行下面的重置命令。
+
 ```powershell
 npm run db:reset
 ```
 
 `db:reset` 会删除并重建数据库，清空全部现有数据，仅应在明确需要重置本地测试数据时使用。
+
+`db:init`、`db:reset` 和首次 `db:provision` 均通过版本化迁移器创建最新表结构并记录已应用版本，避免随后启动时重复添加字段。
+
+旧版初始化后若启动报 `duplicate column name: status`，说明表结构已更新而迁移记录缺失。不要反复初始化，也不要直接跳过所有旧库迁移。需先停止后端、执行 SQLite 一致性备份并校验完整性，再核对实际表结构与当前 `schema.sql`；仅在确认结构完全一致后补齐对应迁移记录。需要保留的数据不得通过 `db:reset` 修复。生产环境仅使用 `db:provision`，禁止测试初始化与重置。
 
 > **数据库迁移在服务启动时自动执行**（`backend/database/migrations/`，版本记录于 `schema_migrations` 表）：新建库直接按 `schema.sql` 建表并批量标记已应用版本；既有库按序应用未执行的增量迁移（如 `002_enrollment_management.sql` 为报名表补充软删除与导入人留痕字段）。升级前建议先用 `sqlite3 <db> ".backup <文件>"` 备份。
 
@@ -182,26 +191,46 @@ Vite 已配置 `/api` 与 `/uploads` 代理到 `http://localhost:3000`，前端�
 
 #### 启动滑翔机模拟（可选）
 
-滑翔机模拟是 Python 物理仿真，需要一套含 `numpy`、`matplotlib`、`imageio-ffmpeg` 的 Python 3 环境（Windows 直接使用系统 Python 即可，参考后端不依赖 novaPhy）：
+滑翔机模拟是唯一的 Python 功能，**平台后端本身不需要 Python**；不需要它可整节跳过
+（前端“开始试飞”按钮会置灰，其余功能不受影响）。
+
+| 你的机器 | 走哪条路 | 得到 |
+| --- | --- | --- |
+| 有 WSL（Ubuntu 24.04+） | 方案二 | **真 novaPhy**（推荐） |
+| 无 WSL / 不想装 | 方案一 | 纯 numpy 参考后端，功能完整 |
+
+##### 方案一：Windows 无 WSL —— 参考后端
 
 ```powershell
-# 本机 Windows（无 WSL）：安装参考后端所需依赖
+python --version      # 必须能直接运行；若是 Microsoft Store 存根会弹应用商店，需先装真 Python
 pip install numpy matplotlib imageio imageio-ffmpeg
 ```
 
-```bash
-# Linux / WSL（真 novaPhy）：另需 Python 3.11 + novaPhy wheel，
-# 可执行 simulation/wsl_setup.sh 一键准备（wheel 路径见脚本头部注释，支持 WHEEL 变量覆盖）
+##### 方案二：WSL —— 真 novaPhy
+
+> ⚠️ novaPhy wheel **不在仓库里**（约 160MB 的第三方二进制包，已被 `.gitignore` 排除），
+> 必须先向项目 owner 索取，并放到 `simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/` 下。
+> 完整说明见 [`simulation/README.md`](simulation/README.md)。
+
+```powershell
+wsl -l -v      # 1) 查发行版名字（下文以 Ubuntu-24.04 为例）；需 Ubuntu 24.04+，22.04 装不了
+
+# 2) 把交付包目录放到 simulation\ 下，然后一键装环境（需要 root）
+wsl -d Ubuntu-24.04 -u root -- bash /mnt/d/<你的路径>/web/simulation/wsl_setup.sh
+# 期望最后一行输出 ALL_DONE
 ```
+
+> 路径换算：WSL 访问 Windows 盘用 `/mnt/<盘符小写>/...`，
+> 例如 `D:\a\b\web` → `/mnt/d/a/b/web`。
 
 然后在 `backend/.env` 声明引擎并正常启动后端：
 
 ```dotenv
-# 方案一：本机无 WSL/无 novaPhy —— 纯 numpy 参考后端（结果与真 novaPhy 等价）
+# 方案一（参考后端）
 GLIDER_PYTHON=python
 GLIDER_BACKEND=reference
 
-# 方案二：有 WSL 的 Linux novaPhy 环境 —— 跑真 novaPhy（推荐）
+# 方案二（真 novaPhy）—— 把 Ubuntu-24.04 换成第 1 步查到的发行版名
 # GLIDER_PYTHON=wsl:Ubuntu-24.04:/opt/novaphy/bin/python
 # GLIDER_BACKEND=novaphy
 ```
@@ -236,13 +265,21 @@ GLIDER_BACKEND=reference
 | --- | --- |
 | 管理员 `admin` | 学校、班级和用户管理；选课导入与异常修正（移除报名）；课程与作品管理；成长档案；反馈管理；滑翔机试飞记录（只读，可查看全部） |
 | 学术导师 `academic_mentor` | 课程全流程管理；选课导入（全平台学生）；可作为课时授课人；课程资料与回放上传管理；任务总览（自己管理课程）；作品批改；学生与成长档案管理 |
-| 教师 `teacher` | 本校学生管理；为**自己授课课时**所在课程导入本校学生；任务总览（自己授课课时）；我授课的课程；查看课程回放；查看公开发布作品；本校成长档案 |
+| 教师 `teacher` | 本校学生管理；为**自己授课课时**所在课程导入本校学生；任务总览（自己授课课时）；我授课的课程；查看课程回放；在工作台和作品管理中查看、批改自己负责学生的作品；本校成长档案 |
 | 学生 `student` | 我的课程（仅已报名课程）与课程回顾（摘要/回放/资料/任务/我的提交）、完成课后任务并提交作品、反思日志（每日一篇）、个人成长档案、滑翔机模拟试飞 |
 | 新媒体 `media` | 课程浏览（只读）、帮助与反馈、通知中心 |
 
-> 学生选课由**执行导师/教师/管理员统一导入**（教师仅限自己授课课程的本校学生），学生端已彻底移除自助选课；**一经选课不可退课**，误导入仅管理员可经异常修正通道移除（该生已产生作品/评价/反思时禁止移除，操作留痕并通知学生）。**公开注册已关闭**，学生账号由管理员导入/创建（默认密码姓名拼音@123，首登强制改密）。作品上传仅限学生本人（从课后任务入口提交），教师与导师均不参与作品上传；教师仅能查看公开发布（已通过批改）的作品，不参与批改。
+> 学生选课由**执行导师/教师/管理员统一导入**（教师仅限自己授课课程的本校学生），学生端已彻底移除自助选课；**一经选课不可退课**，误导入仅管理员可经异常修正通道移除（该生已产生作品/评价/反思时禁止移除，操作留痕并通知学生）。**公开注册已关闭**，学生账号由管理员导入/创建（默认密码姓名拼音@123，首登强制改密）。作品上传仅限学生本人（从课后任务入口提交），教师与导师均不参与作品上传；教师可在工作台或作品管理中查看并批改**负责学生**（学生档案 `teacher_id`）的全部关联报名作品，包含待批改、通过和需修改状态。为兼容历史未分配学生（`teacher_id` 为空），其关联报名作品暂由本校教师查看和批改；一旦分配负责教师，即仅该教师可访问。无报名关联的遗留作品仍不可见。
 > 新课程默认创建为草稿，管理者在课程详情点击「发布课程」后才对学生可见（可随时撤回为草稿）；已发布/已归档课程禁止物理删除，有报名历史（含已移除）的草稿亦不可删除，需留存请归档。
 > 学生端一级导航为 6 项（工作台/我的课程/课后任务/我的作品/实验工具/成长档案）；反思入口在成长档案页、灵境小智入口在已选课程详情、反馈走顶栏按钮、通知走铃铛。移动端侧边栏自动折叠，表格支持横向滚动。
+
+### 作品提交规则
+
+- 学生必须从已报名课程的课后任务入口提交；作品名称必填，成果文字与附件**至少提供一项**即可。
+- 历史任务的“要求上传附件”配置不再阻止纯文字提交，统一遵循文字与附件二选一规则。
+- 附件请求使用浏览器生成的 multipart boundary；后端会校验扩展名、MIME 类型和文件签名。作品附件单个最大 100 MB，支持图片、视频、PDF、Office 文档、ZIP 和指定 3D 模型格式。
+- 自动化回归覆盖仅附件、仅文字、空内容、历史附件要求配置和伪造文件签名等场景。
+- 教师在工作台的“负责学生的最近作品”卡片可按状态进入详情，也可进入“负责学生作品”查看完整列表；列表、详情、附件下载和批改均限本人负责学生的关联报名作品。执行导师仍只按自己创建或授课的课程范围批改，管理员可处理全部作品。
 
 所有已登录角色均可提交反馈、查看自己的反馈、追加说明和确认处理结果，也可以通过顶部铃铛和通知中心接收、筛选及管理站内通知。管理员可查看全部反馈、设置优先级和状态、填写处理结果，并添加仅管理员可见的内部备注。
 
@@ -373,8 +410,6 @@ GLIDER_BACKEND=reference
 - 管理员“用户管理”新增登录账号清单，可复制账号、按姓名/账号搜索，导出当前筛选结果或勾选用户的 CSV；导入结果也可导出本次成功账号。导出只含姓名、账号、身份、学校、班级，不含密码。
 - 部署前可从旧版管理员用户详情或数据库只读查询 `SELECT username, real_name FROM users` 获取账号并分发。前后端需一起更新；已有库无需运行 `db:init` / `db:reset`。正式管理员使用初始化时配置的 `ADMIN_USERNAME`。
 
-第一批对应《账号与权限体系整改方案》第 3 条及第 15 条第 1 项。第二批临时密码整改见下节；学生写权限及生命周期进度见文末“账号权限整改进度”，课程/学校 Policy 仍属于后续批次。
-
 这些账号用于本地开发和测试部署。测试环境可保留默认账号便于验收；公网正式发布前应修改或删除默认密码，并设置固定、强随机的 `JWT_SECRET`。
 
 ### 随机临时密码（账号整改第二批：第 4、5 条）
@@ -409,11 +444,15 @@ GLIDER_BACKEND=reference
 - 重心位置（沿机头方向前移量，m）—— 靠前更稳但滑翔差，靠后易失速翻滚；
 - 初始投放速度（m/s）—— 需高于失速（约 20 m/s）。
 
+提交前需选择**实验课程**（已报名且已发布的课程，可选关联课时），试飞记录落库时携带 `course_id/lesson_id` 供按课程授权与归档。
+
 数据链路：前端提交 → `POST /api/glider/simulate`（限学生）→ 后端 `spawn` 调用
 `simulation/glider/sim_service.py` → 物理积分 → 输出 `backend/uploads/glider/<id>/`
-（`summary.json`、CSV、3D 航迹图、遥测图、`flight_replay.mp4` 回放）→ 前端轮询详情、经鉴权接口拉取结果图与视频播放。历史试飞记录仅本人（管理员可看全部）可见，结果文件也仅本人/管理员可下载，**无需** nginx 额外暴露 `/uploads`。
+（`summary.json`、CSV、3D 航迹图、遥测图、`flight_replay.mp4` 回放）→ 前端轮询详情、经鉴权接口拉取结果图与视频播放。**无需** nginx 额外暴露 `/uploads`。
 
-任务可靠性：后端启动时会清扫历史遗留的 `running` 记录（服务中断不再永久占满并发）；提交模拟前先做引擎能力探测（结果缓存 60 秒，探测回调有防双响应守卫），不可用时快速失败；单次模拟有硬超时（`GLIDER_TIMEOUT` + 120 秒缓冲，超时强制终止）；前端轮询超过 5 分钟未完成会提示疑似卡住并停止轮询。
+试飞记录权限（决策 D-7）：管理员可见全部；执行导师可见自己课程（创建或授课）学生的记录；学生仅本人；教师/新媒体无权限。遗留无课程关联的记录仅管理员与本人可见。
+
+任务可靠性：后端启动时会清扫历史遗留的 `running` 记录（服务中断不再永久占满并发）；提交前先做课程报名与课时归属校验，再经 `sim_service.py --probe` 做**真实引擎探测**（探测 Python/numpy/matplotlib/ffmpeg/novaPhy 与输出目录可写性，结果缓存 60 秒并有防双响应守卫），不可用快速失败 503；单次模拟有硬超时（`GLIDER_TIMEOUT` + 120 秒缓冲，超时强制终止）；前端轮询超过 5 分钟未完成会提示疑似卡住并停止轮询。
 
 ### 引擎双后端（本地 = 服务器一致）
 
@@ -427,14 +466,50 @@ GLIDER_BACKEND=reference
 
 `GLIDER_BACKEND` 支持 `auto`（默认，可加载 novaPhy 则优先）/ `novaphy` / `reference`。
 
-### Python 依赖
+### Python 依赖与安装
 
-- 本机 Python 3（Windows 参考后端）：`numpy matplotlib imageio imageio-ffmpeg`。
-- Linux novaPhy 环境（服务器 `/opt/novaphy` 或 WSL）：Python 3.11 venv，安装
-  `novaphy-0.4.0-cp311-cp311-linux_x86_64.whl` + `numpy matplotlib Pillow imageio imageio-ffmpeg`；
-  可用 `simulation/wsl_setup.sh` 一键准备（wheel 默认取脚本目录下交付包目录，也可用 `WHEEL` 环境变量指定）。
-  注意：WSL 中该 venv 若由 root 创建，需 `wsl -d <发行版> -u root -- bash -lc '/opt/novaphy/bin/pip install imageio imageio-ffmpeg'`。
-  缺失 `imageio-ffmpeg` 时视频自动跳过（`files.video=null`），不影响模拟结果。
+**0) 先放入 novaPhy 交付包（仅真 novaPhy 需要）**。仓库**不含** novaPhy（约 160MB 的第三方二进制包，
+`.gitignore` 已排除），需要时向项目 owner 索取，把**整个目录连同目录名**放到
+`simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/`，并校验完整性：
+
+```bash
+cd simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64 && sha256sum -c SHA256SUMS
+```
+
+**1) Windows 参考后端**（不需要 novaPhy）：
+
+```powershell
+python --version      # 确认不是 Microsoft Store 存根
+pip install numpy matplotlib imageio imageio-ffmpeg
+```
+
+**2) WSL / Ubuntu·Debian 服务器：真 novaPhy**：
+
+```bash
+# WSL（在 Windows 上）；发行版名用 wsl -l -v 查，需 Ubuntu 24.04+
+wsl -d Ubuntu-24.04 -u root -- bash /mnt/d/<路径>/web/simulation/wsl_setup.sh
+
+# Ubuntu/Debian 服务器（原生）
+cd <项目根目录> && sudo bash simulation/wsl_setup.sh
+```
+
+脚本装到 `/opt/novaphy`，结尾打印 `ALL_DONE`；它会把交付包里的 wheel 与
+`numpy matplotlib Pillow imageio imageio-ffmpeg` 一并装进 venv（viewer 依赖可选、失败不中断）。
+若发行版不是 Ubuntu 24.04+，脚本会在预检阶段直接报错退出并告知原因。
+
+**3) RHEL / Alibaba Cloud Linux 服务器**（脚本依赖 apt，不适用，改手工装）：
+
+```bash
+sudo dnf install -y python3.11 python3.11-devel gcc gcc-c++ make
+sudo python3.11 -m venv /opt/novaphy
+sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow imageio imageio-ffmpeg
+sudo /opt/novaphy/bin/pip install simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/*.whl
+/opt/novaphy/bin/python -c "import novaphy; print('novaPhy OK')"
+```
+
+> 若 venv 由 root 创建，后续补装依赖需带 `sudo`，例如
+> `sudo /opt/novaphy/bin/pip install imageio imageio-ffmpeg`。
+> 缺失 `imageio-ffmpeg` 时视频自动跳过（`files.video=null`），不影响模拟结果。
 
 ### 相关环境变量（均写入 `backend/.env` 或生产 `EnvironmentFile`）
 
@@ -446,6 +521,8 @@ GLIDER_TIMEOUT=100                        # 单次最长仿真秒数（150m 稳�
 GLIDER_VIDEO=1                            # 0 关闭 MP4 回放
 GLIDER_VIDEO_FPS=10                       # 回放帧率
 GLIDER_VIDEO_MAX=300                      # 回放时长上限秒（默认不截断，覆盖全程含着陆）
+GLIDER_RETENTION_DAYS=0                   # error 状态结果保留天数；0=不自动清理（决策 E-6）
+DISK_WARN_PERCENT=85                      # doctor.sh 磁盘使用率告警阈值
 ```
 
 ### 结果说明
@@ -459,12 +536,15 @@ GLIDER_VIDEO_MAX=300                      # 回放时长上限秒（默认不截
 - 学校添加与学生批量导入以弹窗实现，无独立路由页面。
 - 灵境小智为关键词规则匹配，不是真实生成式 AI。
 - 一经选课不可退课：日常无退课入口，误导入仅管理员可异常修正（该生有作品/评价/反思时禁止移除）。
+- 成长档案按角色过滤：教师仅见本校已通过作品；执行导师仅见历史上参加过自己课程（创建或授课）的学生，且作品/评价/反思限定在其课程范围内；**无课程关联的遗留作品/评价/反思（enrollment_id 为空）仅管理员与学生本人可见**。
+- 课程评价仅执行导师/管理员可提交且必须选择有效报名课程；教师改用成长观察（growth-records）记录校内表现。
+- 作品删除分级保护：学生仅可删除待批改或被打回的最新版本；导师不可物理删除；已通过或有后续版本的作品任何角色不可删。
 - 课程删除仅限“草稿 + 无报名历史 + 无作品”；发布/归档课程需先撤回，有报名记录的草稿建议归档保留。
 - 反思日志仅限学生本人（教师/导师/管理员不可代写），每日一篇的边界为北京时间零点（UTC 存储 +8 小时换算）。
 - 待办任务以“是否存在有效提交”为准，不再区分是否要求附件（纯文字任务同样进入待办）。
 - 通知目前仅支持站内消息和 60 秒轮询，不含管理员公告编辑、定时发布、邮件、短信、WebSocket/SSE 或移动端推送。
 - 课程学习页已重定位为“课程回顾页”（摘要/回放/资料/任务/我的提交），不再提供手动进度标记。
-- 后端现有 45 个自动化测试（安全隔离、选课闭环、一致性接口、反馈与通知服务）；前端路由守卫、移动端抽屉导航、统一搜索防抖等体验项与部分业务模块测试仍在规划批次中。
+- 后端现有 70 个自动化测试（安全隔离、选课闭环、一致性接口、作品上传、作品权限、档案与评价、滑翔机授权、反馈与通知服务）；前端路由守卫、移动端抽屉导航、统一搜索防抖等体验项与部分业务模块测试仍在规划批次中。
 - CI 已接入（`.github/workflows/ci.yml`：push/PR 触发后端测试 + 前端 lint/构建）；**main 分支保护需在 GitHub 仓库 Settings → Branches 中开启**（建议勾选 Require pull request + Require status checks 的 CI）。当前 `xzx-2` 分支承载本轮选课闭环与数据一致性修复，合并前建议按“测试站完整回归 → 新 PR → CI 绿 → 合并”流程推进。
 
 ## 服务器部署
@@ -684,8 +764,27 @@ curl -I  http://127.0.0.1/login                # SPA fallback
 
 ### 3. 服务器部署滑翔机引擎（如需该功能）
 
-- 创建 Linux Python 3.11 环境并安装 novaPhy wheel 与渲染依赖（命令同“滑翔机模拟（学生科创）”章节）；
-- `backend.env` 中 `GLIDER_PYTHON=/opt/novaphy/bin/python`（`GLIDER_BACKEND=auto` 即可）；
+**前置**：把 novaPhy 交付包放到 `simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/`
+（仓库不含，见“滑翔机模拟（学生科创）→ Python 依赖与安装”第 0 步）。
+
+```bash
+cd /opt/pbl-platform/current
+sudo bash simulation/wsl_setup.sh          # Ubuntu/Debian：装到 /opt/novaphy
+# RHEL/Alibaba Cloud Linux 用 dnf 手工装，命令见“Python 依赖与安装”第 3 步
+
+/opt/novaphy/bin/python -c "import novaphy; print('novaPhy OK')"
+bash scripts/doctor.sh                     # 第 3 节会校验交付包与引擎可用性
+```
+
+然后确认 `backend.env` 内：
+
+```dotenv
+GLIDER_PYTHON=/opt/novaphy/bin/python
+GLIDER_BACKEND=auto
+```
+
+- 若忘配这两项，后端会回退 `python3` + 参考后端：**能跑但不是真 novaPhy**，`doctor.sh` 会给出 WARN；
+- 若显式设了 `GLIDER_BACKEND=novaphy` 而解释器不可用，`doctor.sh` 直接 **FAIL**，避免蒙混过关；
 - 模拟结果图/视频写入 `UPLOAD_PATH/glider/<id>/`（即数据盘），随备份一起持久化。
 
 ## 账号权限整改进度

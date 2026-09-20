@@ -40,6 +40,8 @@ before(async () => {
   insertUser.run(3, 'teacher_b', userPwd, '乙老师', 'teacher', 2, 2);
   insertUser.run(4, 'student_a', userPwd, '学生A', 'student', 1, 1);
   insertUser.run(5, 'student_b', userPwd, '学生B', 'student', 2, 2);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(2, 4);
+  db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(3, 5);
 
   db.prepare(`
     INSERT INTO courses (id, title, grade_level, difficulty, status, created_by)
@@ -111,7 +113,7 @@ test('作品下载接口未登录返回 401', async () => {
   assert.equal(res.status, 401);
 });
 
-test('教师只能看到公开发布作品', async () => {
+test('教师只能看到负责学生的作品', async () => {
   const { body: loginBody } = await login('甲老师', 'user123');
   const list = await getJson('/api/works', loginBody.token);
   assert.equal(list.status, 200);
@@ -121,7 +123,7 @@ test('教师只能看到公开发布作品', async () => {
 test('教师不能查看或下载未公开发布作品', async () => {
   const { body: loginBody } = await login('甲老师', 'user123');
   const detail = await getJson('/api/works/2', loginBody.token);
-  assert.equal(detail.status, 400);
+  assert.equal(detail.status, 403);
   const download = await fetch(`${baseUrl}/api/works/2/download`, {
     headers: { Authorization: `Bearer ${loginBody.token}` },
   });

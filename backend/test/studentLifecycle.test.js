@@ -33,7 +33,7 @@ before(async () => {
   db.prepare("INSERT INTO courses (id,title,grade_level,difficulty,status,created_by) VALUES (1,'历史课程','primary','basic','published',1)").run();
   db.prepare("INSERT INTO courses (id,title,grade_level,difficulty,status,created_by) VALUES (2,'新课程','primary','basic','published',1)").run();
   db.prepare('INSERT INTO enrollments (id,student_id,course_id) VALUES (1,4,1)').run();
-  db.prepare("INSERT INTO works (student_id,title,file_path) VALUES (4,'历史作品','preserved.txt')").run();
+  db.prepare("INSERT INTO works (student_id,enrollment_id,title,file_path,review_status) VALUES (4,1,'历史作品','preserved.txt','approved')").run();
   server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -115,11 +115,13 @@ test('状态及会话撤销、操作记录在同一事务，记录失败则全�
 test('旧库增量迁移幂等且保留账号与密码，新库结构一致', () => {
   const old = new Database(':memory:');
   try {
+    // 模拟合并前旧库：仅 users + 迁移基线，且各迁移目标表已存在（与真实旧库一致）
     old.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, is_active INTEGER); INSERT INTO users VALUES (1,'old','unchanged',1); CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,name TEXT,applied_at TEXT); INSERT INTO schema_migrations VALUES(1,'baseline',''),(2,'enrollments','');");
+    old.exec('CREATE TABLE enrollments (id INTEGER PRIMARY KEY); CREATE TABLE growth_records (id INTEGER PRIMARY KEY); CREATE TABLE works (id INTEGER PRIMARY KEY, student_id INTEGER, task_id INTEGER, parent_work_id INTEGER); CREATE TABLE glider_simulations (id INTEGER PRIMARY KEY); CREATE TABLE lessons (id INTEGER PRIMARY KEY); CREATE TABLE tasks (id INTEGER PRIMARY KEY);');
     const { runMigrations } = require('../database/migrate');
     runMigrations(old); runMigrations(old);
     assert.deepEqual(old.prepare('SELECT * FROM users').get(), { id: 1, username: 'old', password_hash: 'unchanged', is_active: 1, archived_at: null, auth_version: 0 });
-    assert.equal(old.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version=3').get().c, 1);
+    assert.equal(old.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version=8').get().c, 1);
     assert.ok(db.prepare('PRAGMA table_info(users)').all().some(c => c.name === 'archived_at'));
   } finally { old.close(); }
 });

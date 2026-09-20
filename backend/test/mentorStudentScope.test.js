@@ -91,7 +91,7 @@ test('管理员、教师本校范围、学生本人档案维持原有行为',asy
   const admin=(await api('/students',tokens.admin)).body.tree;
   assert.deepEqual(ids(treeStudents(admin)),[5,6,7,8,9]);
   assert.deepEqual(ids((await api('/students',tokens.teacher)).body.students),[5,6,7,9]);
-  assert.equal((await api('/archives/generate?student_id=8',tokens.teacher)).status,400);
+  assert.equal((await api('/archives/generate?student_id=8',tokens.teacher)).status,403);
   assert.equal((await api('/archives/generate?student_id=6',tokens.admin)).status,200);
   const own=await api('/archives/generate?student_id=6',tokens.own);
   assert.equal(own.status,200);assert.equal(own.body.student.id,5);

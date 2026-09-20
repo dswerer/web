@@ -33,7 +33,6 @@ function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExe
     sql += ' AND u.school_id = ?';
     params.push(schoolId);
   }
-
   sql += ' ORDER BY u.role, u.real_name';
 
   const users = db.prepare(sql).all(...params);
@@ -76,7 +75,7 @@ function buildUserTree({ roles = ['student', 'teacher'], search = '', includeExe
     }
   }
 
-  if (search || mentorId !== null) {
+  if (search || schoolId || mentorId !== null) {
     for (const school of tree.schools) {
       school.classes = school.classes.filter((cls) => cls.roles.teacher.length > 0 || cls.roles.student.length > 0);
     }
