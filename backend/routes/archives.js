@@ -13,7 +13,7 @@ router.post('/growth-records', requireRole('admin', 'academic_mentor', 'teacher'
 // 反思日志仅限学生本人
 router.get('/reflection', requireRole('student'), controller.showReflection);
 router.post('/reflection', requireRole('student'), controller.submitReflection);
-// 课程评价仅执行导师/管理员（决策 D-5）；教师走成长观察（growth-records）
+// 课程评价仅由执行导师/管理员写入；教师可为本校学生添加成长观察。
 router.post('/evaluation', requireRole('admin', 'academic_mentor'), controller.submitEvaluation);
 
 module.exports = router;

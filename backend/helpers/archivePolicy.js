@@ -7,7 +7,7 @@ function studentInMentorCourses(mentorId, studentId) {
   return canViewStudent({ id: mentorId, role: 'academic_mentor' }, { id: studentId });
 }
 
-// 查看档案：admin 全部；学生本人；教师本校；导师=历史上参加过其课程的学生
+// 查看档案：admin 全部；学生本人；教师本校；导师=历史上参加过其创建课程的学生
 function canViewArchive(user, student) {
   if (user.role === 'admin') return true;
   if (user.role === 'student') return student.id === user.id;
@@ -16,7 +16,7 @@ function canViewArchive(user, student) {
   return false;
 }
 
-// 成长观察：admin/导师全量；教师限本校
+// 成长记录管理员/执行导师可写；教师限本校学生。
 function canAddObservation(user, student) {
   if (['admin', 'academic_mentor'].includes(user.role)) return true;
   return user.role === 'teacher' && !!user.school_id && student.school_id === user.school_id;

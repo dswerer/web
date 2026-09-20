@@ -93,7 +93,7 @@ export default function ArchiveIndex() {
           {treeData.length ? <Tree treeData={treeData} onSelect={handleSelect} showIcon defaultExpandAll={false} /> : <Text type="secondary">暂无可查看的学生</Text>}
         </Card>
         <Card title="档案详情" style={{ flex: 1, minWidth: 320 }}>
-          {detailLoading ? <Spin /> : archive ? <><Space style={{ marginBottom: 16 }}><Button onClick={() => window.print()}>导出 PDF</Button><Button type="primary" onClick={() => setRecordOpen(true)}>添加成长记录</Button></Space><ArchiveDetail archive={archive} /></> : <Text type="secondary">请从左侧选择学生查看档案</Text>}
+          {detailLoading ? <Spin /> : archive ? <><Space style={{ marginBottom: 16 }}><Button onClick={() => window.print()}>导出 PDF</Button>{['admin', 'academic_mentor'].includes(user?.role) && <Button type="primary" onClick={() => setRecordOpen(true)}>添加成长记录</Button>}</Space><ArchiveDetail archive={archive} /></> : <Text type="secondary">请从左侧选择学生查看档案</Text>}
         </Card>
       </div>
       <Modal title="添加成长记录" open={recordOpen} onCancel={() => setRecordOpen(false)} onOk={async () => { if (!record.trim()) return; await archiveAPI.addGrowthRecord({ student_id: selectedStudentId, description: record }); message.success('成长记录已添加'); setRecord(''); setRecordOpen(false); handleSelect([`user-${selectedStudentId}`]); }}><Input.TextArea rows={4} value={record} onChange={(e) => setRecord(e.target.value)} /></Modal>
@@ -109,7 +109,7 @@ function ArchiveDetail({ archive }) {
     { label: '项目作品', value: new Set((archive.works || []).map((w) => w.parent_work_id || w.id)).size },
     { label: '作品迭代', value: (archive.works || []).filter((w) => w.parent_work_id).length },
     { label: '反思日志', value: archive.reflections?.length ?? 0 },
-    { label: '教师评价', value: archive.evaluations?.length ?? 0 },
+    { label: '导师评价', value: archive.evaluations?.length ?? 0 },
   ];
   // 时间轴：成长记录为唯一事件源；作品仅在无对应成长记录时兜底合成（按 work_id 匹配，遗留数据按标题+时间完全匹配）
   const timeline = [
@@ -189,7 +189,7 @@ function ArchiveDetail({ archive }) {
 
       {archive.evaluations?.length > 0 && (
         <>
-          <Title level={5}>教师评价</Title>
+          <Title level={5}>导师评价</Title>
           <List dataSource={archive.evaluations} renderItem={(ev) => (
             <List.Item>
               <List.Item.Meta

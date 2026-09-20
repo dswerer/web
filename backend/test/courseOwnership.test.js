@@ -73,12 +73,12 @@ test('导师无法跨课程修改、删除、排课、加任务、管理回放�
   assert.deepEqual(files,[]);
 });
 
-test('课程列表与详情返回逐课程管理标志，跨课程只读仍可查看', async () => {
+test('课程列表与详情返回逐课程管理标志，其他导师草稿详情不可访问', async () => {
   const list = await api('/courses');
   assert.deepEqual(list.body.courses.filter(c=>c.can_manage).map(c=>c.id),[1]);
   assert.equal((await api('/courses/1')).body.course.can_enroll,true);
   const other = await api('/courses/2');
-  assert.equal(other.status,200); assert.equal(other.body.course.can_manage,false); assert.equal(other.body.course.can_enroll,false);
+  assert.equal(other.status,403);
   assert.ok((await api('/courses','GET',undefined,tokens.admin)).body.courses.every(c=>c.can_manage));
 });
 

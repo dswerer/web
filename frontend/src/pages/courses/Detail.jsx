@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Card, Descriptions, Table, Button, Tag, Tabs, Form, Input, Modal, Space, Typography, message, Checkbox, Select, Upload, Popconfirm } from 'antd';
+import { Card, Descriptions, Table, Button, Tag, Tabs, Form, Input, Modal, Result, Space, Typography, message, Checkbox, Select, Upload, Popconfirm } from 'antd';
 import { ArrowLeftOutlined, DownloadOutlined, PlusOutlined, UploadOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { courseAPI, studentAPI, authAPI } from '../../api';
 import { useAuth } from '../../store/AuthContext';
-import PageLoading from '../../components/common/PageLoading';
 
 const { Title, Text } = Typography;
 
@@ -22,6 +21,8 @@ export default function CourseDetail() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [course, setCourse] = useState(null);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [lessons, setLessons] = useState([]);
   const [resources, setResources] = useState([]);
   const [replays, setReplays] = useState([]);
@@ -43,13 +44,12 @@ export default function CourseDetail() {
   const [taskForm] = Form.useForm();
   const [replayForm] = Form.useForm();
   const [resourceForm] = Form.useForm();
-  // 选课导入（执行导师/教师/管理员；教师限本校）
+  // 选课导入（执行导师/管理员）
   const [importOpen, setImportOpen] = useState(false);
   const [candidates, setCandidates] = useState([]);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [importing, setImporting] = useState(false);
-  const [lockedSchoolId, setLockedSchoolId] = useState(null);
   const [schoolOptions, setSchoolOptions] = useState([]);
   const [candidateSchool, setCandidateSchool] = useState(undefined);
   const [candidateClasses, setCandidateClasses] = useState([]);
@@ -60,6 +60,8 @@ export default function CourseDetail() {
   const [removeLoading, setRemoveLoading] = useState(false);
 
   const loadData = async () => {
+    setPageLoading(true);
+    setLoadError('');
     try {
       const res = await courseAPI.detail(id);
       setCourse(res.course);
@@ -69,7 +71,12 @@ export default function CourseDetail() {
       setEnrollments(res.enrollments || []);
       setTasks(res.tasks || []);
       setTeachers(res.teachers || []);
-    } catch { message.error('加载失败'); }
+    } catch (err) {
+      setCourse(null);
+      setLoadError(err?.response?.data?.error || '课程不存在，或当前身份无权查看。');
+    } finally {
+      setPageLoading(false);
+    }
   };
 
   // 页面首次进入时加载完整详情；loadData 会在异步回调中更新多个状态。
@@ -215,7 +222,6 @@ export default function CourseDetail() {
     try {
       const res = await courseAPI.enrollCandidates(id, query);
       setCandidates(res.students || []);
-      setLockedSchoolId(res.lockedSchoolId);
     } catch { /* handled */ } finally {
       setCandidateLoading(false);
     }
@@ -228,11 +234,9 @@ export default function CourseDetail() {
     setCandidateClasses([]);
     setCandidates([]);
     setImportOpen(true);
-    if (user?.role !== 'teacher') {
-      authAPI.getSchools()
-        .then((res) => setSchoolOptions(Array.isArray(res) ? res : (res.schools || [])))
-        .catch(() => {});
-    }
+    authAPI.getSchools()
+      .then((res) => setSchoolOptions(Array.isArray(res) ? res : (res.schools || [])))
+      .catch(() => {});
     await loadCandidates({});
   };
 
@@ -306,10 +310,13 @@ export default function CourseDetail() {
     }
   };
 
-  if (!course) return <PageLoading />;
+  if (!course) return pageLoading
+    ? <div style={{ padding: 24 }}><Card loading /></div>
+    : <Result status={loadError.includes('无权') ? '403' : '404'} title="无法打开课程" subTitle={loadError} extra={<Space><Button onClick={() => navigate('/courses')}>返回课程列表</Button><Button type="primary" onClick={loadData}>重新加载</Button></Space>} />;
 
   const isStudent = user?.role === 'student';
   const isEnrolled = isStudent && enrollments.some((e) => e.student_id === user.id);
+  const firstLearningLesson = lessons.find((lesson) => lesson.status !== 'cancelled');
 
   const tabItems = [
     {
@@ -321,16 +328,18 @@ export default function CourseDetail() {
           )}
           {lessons.map((lesson) => (
             <Card key={lesson.id} size="small" style={{ marginBottom: 8 }} title={lesson.title}
-              extra={course.can_manage && (
-                <Button size="small" onClick={() => { setActiveLesson(lesson); setTaskModal(true); }}>+ 添加任务</Button>
-              )}
+              extra={<Space>
+                {isEnrolled && <Button type="primary" size="small" onClick={() => navigate(`/courses/${course.id}/lessons/${lesson.id}/learn`)}>进入课后学习</Button>}
+                {course.can_manage && <Button type="primary" size="small" onClick={() => navigate(`/courses/${course.id}/lessons/${lesson.id}/content`)}>设置知识卡片与习题</Button>}
+                {course.can_manage && <Button size="small" onClick={() => { setActiveLesson(lesson); setTaskModal(true); }}>添加任务</Button>}
+              </Space>}
             >
               {lesson.description && <p>{lesson.description}</p>}
               <Space wrap size={[4, 0]}>
                 {lesson.duration && <Tag>{lesson.duration} 分钟</Tag>}
                 {lesson.start_at && <Tag color="blue">上课 {lesson.start_at.replace('T', ' ')}</Tag>}
-                {lesson.location && <Tag color="green">📍 {lesson.location}</Tag>}
-                {lesson.instructor_name && <Tag>👨‍🏫 {lesson.instructor_name}</Tag>}
+                {lesson.location && <Tag color="green">地点：{lesson.location}</Tag>}
+                {lesson.instructor_name && <Tag>授课：{lesson.instructor_name}</Tag>}
               </Space>
               {tasks.filter((task) => task.lesson_id === lesson.id).map((task) => <div key={task.id} style={{ marginTop: 8 }}><Link to={`/tasks/${task.id}`}>{task.title}</Link>{task.deadline && <Tag style={{ marginLeft: 8 }}>截止 {task.deadline}</Tag>}</div>)}
             </Card>
@@ -440,7 +449,7 @@ export default function CourseDetail() {
           <Button size="small" onClick={() => handleChangeStatus('draft')}>撤回为草稿</Button>
         )}
         {isStudent && isEnrolled && <Tag color="green">已选修</Tag>}
-        {isStudent && isEnrolled && <Button onClick={() => navigate(`/courses/${id}/learn`)}>开始学习</Button>}
+        {isStudent && isEnrolled && firstLearningLesson && <Button type="primary" onClick={() => navigate(`/courses/${id}/lessons/${firstLearningLesson.id}/learn`)}>进入课时学习</Button>}
         {isStudent && isEnrolled && <Button type="link" onClick={() => navigate('/dashboard/ai')}>灵境小智</Button>}
       </Space>
 
@@ -475,7 +484,7 @@ export default function CourseDetail() {
                 </div>
                 <div style={{ marginTop: 12 }}>
                   <Space wrap>
-                    <Button type="primary" onClick={() => navigate(`/courses/${id}/learn`)}>📖 进入课程回顾</Button>
+                    <Button type="primary" disabled={!firstLearningLesson} onClick={() => navigate(`/courses/${id}/lessons/${firstLearningLesson.id}/learn`)}>继续课后学习</Button>
                     <Button onClick={() => navigate('/dashboard/ai')}>灵境小智</Button>
                   </Space>
                 </div>
@@ -508,8 +517,8 @@ export default function CourseDetail() {
           <Form.Item name="start_at" label="上课时间"><Input type="datetime-local" /></Form.Item>
           <Form.Item name="end_at" label="下课时间"><Input type="datetime-local" /></Form.Item>
           <Form.Item name="location" label="上课地点"><Input placeholder="如：北航 XX 实验室" /></Form.Item>
-          <Form.Item name="instructor_id" label="授课教师">
-            <Select allowClear placeholder="选择授课教师（执行导师）"
+          <Form.Item name="instructor_id" label="执行导师">
+            <Select allowClear placeholder="选择执行导师"
               options={teachers.map((t) => ({ value: t.id, label: `${t.real_name}${t.role === 'academic_mentor' ? '（执行导师）' : ''}` }))} />
           </Form.Item>
         </Form>
@@ -587,7 +596,7 @@ export default function CourseDetail() {
           </Form.Item>
         </Form>
       </Modal>
-      {/* 导入学生 Modal（执行导师/教师/管理员） */}
+      {/* 导入学生 Modal（执行导师/管理员） */}
       <Modal
         title="导入学生"
         open={importOpen}
@@ -603,25 +612,17 @@ export default function CourseDetail() {
             placeholder="搜索姓名/用户名" allowClear style={{ width: 200 }}
             onSearch={(v) => loadCandidates({ search: v || undefined, school_id: candidateSchool, class_id: candidateClass })}
           />
-          {user?.role === 'teacher' ? (
-            <Tag color="blue">仅本校学生{lockedSchoolId ? '（已锁定学校范围）' : ''}</Tag>
-          ) : (
-            <>
-              <Select
-                placeholder="按学校筛选" allowClear style={{ width: 180 }} value={candidateSchool}
-                onChange={handleCandidateSchoolChange}
-                options={schoolOptions.map((s) => ({ value: s.id, label: s.name }))}
-              />
-              <Select
-                placeholder="按班级筛选" allowClear style={{ width: 160 }} value={candidateClass}
-                onChange={(v) => { setCandidateClass(v); loadCandidates({ search: undefined, school_id: candidateSchool, class_id: v }); }}
-                options={candidateClasses.map((c) => ({ value: c.id, label: `${c.grade || ''} ${c.name}` }))}
-              />
-            </>
-          )}
-          {user?.role !== 'teacher' && (
-            <Button size="small" onClick={() => loadCandidates({ school_id: candidateSchool, class_id: candidateClass })}>查询</Button>
-          )}
+          <Select
+            placeholder="按学校筛选" allowClear style={{ width: 180 }} value={candidateSchool}
+            onChange={handleCandidateSchoolChange}
+            options={schoolOptions.map((s) => ({ value: s.id, label: s.name }))}
+          />
+          <Select
+            placeholder="按班级筛选" allowClear style={{ width: 160 }} value={candidateClass}
+            onChange={(v) => { setCandidateClass(v); loadCandidates({ search: undefined, school_id: candidateSchool, class_id: v }); }}
+            options={candidateClasses.map((c) => ({ value: c.id, label: `${c.grade || ''} ${c.name}` }))}
+          />
+          <Button size="small" onClick={() => loadCandidates({ school_id: candidateSchool, class_id: candidateClass })}>查询</Button>
         </Space>
         <Table
           rowKey="id" size="small" loading={candidateLoading} dataSource={candidates}

@@ -7,11 +7,14 @@ import { notificationAPI } from '../../api';
 import { notificationCategories } from '../../constants/notification';
 import NotificationLevelTag from '../../components/notifications/NotificationLevelTag';
 import useNotifications from '../../hooks/useNotifications';
+import { useAuth } from '../../store/AuthContext';
+import { canRoleAccessPath } from '../../utils/roleNavigation';
 
 const { Title, Paragraph } = Typography;
 
 export default function NotificationDetail() {
   const { id } = useParams();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { refreshUnread } = useNotifications();
   const [notification, setNotification] = useState(null);
@@ -77,7 +80,7 @@ export default function NotificationDetail() {
         </Descriptions>
         <Paragraph style={{ whiteSpace: 'pre-wrap', margin: '24px 0' }}>{notification.content}</Paragraph>
         <Space>
-          {notification.action_url && (
+          {notification.action_url && canRoleAccessPath(user?.role, notification.action_url) && (
             <Button type="primary" icon={<LinkOutlined />} onClick={() => navigate(notification.action_url)}>
               查看相关内容
             </Button>

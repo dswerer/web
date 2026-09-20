@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS lesson_progress (
 CREATE TABLE IF NOT EXISTS resources (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   course_id INTEGER NOT NULL,
+  lesson_id INTEGER,
   resource_type TEXT NOT NULL CHECK(resource_type IN ('lesson_plan','guide_card','template','courseware','video','other')),
   title TEXT NOT NULL,
   description TEXT,
@@ -171,6 +172,7 @@ CREATE TABLE IF NOT EXISTS resources (
   upload_by INTEGER NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL,
   FOREIGN KEY (upload_by) REFERENCES users(id)
 );
 
@@ -178,6 +180,7 @@ CREATE TABLE IF NOT EXISTS resources (
 CREATE TABLE IF NOT EXISTS course_replays (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   course_id INTEGER NOT NULL,
+  lesson_id INTEGER,
   title TEXT NOT NULL,
   description TEXT,
   video_path TEXT NOT NULL,
@@ -188,6 +191,7 @@ CREATE TABLE IF NOT EXISTS course_replays (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
@@ -306,12 +310,117 @@ CREATE TABLE IF NOT EXISTS growth_records (
   FOREIGN KEY (recorded_by) REFERENCES users(id)
 );
 
+-- 12.1 课后知识卡片与配套练习
+CREATE TABLE IF NOT EXISTS knowledge_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lesson_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT,
+  content TEXT NOT NULL,
+  key_points TEXT,
+  common_mistakes TEXT,
+  example_content TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_required INTEGER NOT NULL DEFAULT 1 CHECK(is_required IN (0,1)),
+  estimated_minutes INTEGER,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','published','archived')),
+  created_by INTEGER NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS card_exercises (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL,
+  question_type TEXT NOT NULL CHECK(question_type IN ('single_choice','multiple_choice','true_false','fill_blank','short_answer')),
+  prompt TEXT NOT NULL,
+  options_json TEXT,
+  answer_json TEXT NOT NULL,
+  explanation TEXT,
+  points INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_required INTEGER NOT NULL DEFAULT 1 CHECK(is_required IN (0,1)),
+  max_attempts INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (card_id) REFERENCES knowledge_cards(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS card_exercise_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  exercise_id INTEGER NOT NULL,
+  answer_json TEXT NOT NULL,
+  is_correct INTEGER CHECK(is_correct IN (0,1)),
+  score INTEGER NOT NULL DEFAULT 0,
+  attempt_no INTEGER NOT NULL,
+  submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (exercise_id) REFERENCES card_exercises(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS student_card_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  card_id INTEGER NOT NULL,
+  viewed_at DATETIME,
+  completed_at DATETIME,
+  best_score INTEGER NOT NULL DEFAULT 0,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(student_id, card_id),
+  FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (card_id) REFERENCES knowledge_cards(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lesson_review_completions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  lesson_id INTEGER NOT NULL,
+  completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(student_id, lesson_id),
+  FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lesson_learning_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id INTEGER NOT NULL,
+  lesson_id INTEGER NOT NULL,
+  enrollment_id INTEGER,
+  summary TEXT NOT NULL,
+  key_points TEXT,
+  application TEXT,
+  difficulties TEXT,
+  next_plan TEXT,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','approved','rejected')),
+  parent_report_id INTEGER,
+  version INTEGER NOT NULL DEFAULT 1,
+  reviewer_id INTEGER,
+  review_comment TEXT,
+  score INTEGER CHECK(score BETWEEN 0 AND 100),
+  score_dimensions_json TEXT,
+  submitted_at DATETIME,
+  reviewed_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,
+  FOREIGN KEY (enrollment_id) REFERENCES enrollments(id) ON DELETE SET NULL,
+  FOREIGN KEY (parent_report_id) REFERENCES lesson_learning_reports(id) ON DELETE SET NULL,
+  FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE SET NULL,
+  UNIQUE(student_id, lesson_id, version)
+);
+
 -- 13. 反思日志
 CREATE TABLE IF NOT EXISTS reflections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   student_id INTEGER NOT NULL,
   enrollment_id INTEGER,
   lesson_id INTEGER,
+  report_id INTEGER,
   difficulty TEXT,
   solution TEXT,
   improvement TEXT,
@@ -319,7 +428,8 @@ CREATE TABLE IF NOT EXISTS reflections (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (enrollment_id) REFERENCES enrollments(id) ON DELETE SET NULL,
-  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL
+  FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE SET NULL,
+  FOREIGN KEY (report_id) REFERENCES lesson_learning_reports(id) ON DELETE SET NULL
 );
 
 -- 14. 评价
@@ -485,6 +595,7 @@ CREATE TABLE IF NOT EXISTS glider_simulations (
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_school ON users(school_id);
+CREATE INDEX IF NOT EXISTS idx_users_teacher ON users(teacher_id, role, is_active);
 CREATE INDEX IF NOT EXISTS idx_courses_theme ON courses(theme);
 CREATE INDEX IF NOT EXISTS idx_courses_grade ON courses(grade_level);
 CREATE INDEX IF NOT EXISTS idx_courses_status ON courses(status);
@@ -495,6 +606,16 @@ CREATE INDEX IF NOT EXISTS idx_works_student ON works(student_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_works_root ON works(student_id, task_id) WHERE parent_work_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_growth_records_work ON growth_records(work_id);
 CREATE INDEX IF NOT EXISTS idx_reflections_student ON reflections(student_id);
+CREATE INDEX IF NOT EXISTS idx_reflections_report ON reflections(report_id);
+CREATE INDEX IF NOT EXISTS idx_course_replays_lesson ON course_replays(lesson_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_resources_lesson ON resources(lesson_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_cards_lesson ON knowledge_cards(lesson_id, status, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_card_exercises_card ON card_exercises(card_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_card_attempts_student_exercise ON card_exercise_attempts(student_id, exercise_id, attempt_no DESC);
+CREATE INDEX IF NOT EXISTS idx_student_card_progress_student ON student_card_progress(student_id, card_id);
+CREATE INDEX IF NOT EXISTS idx_lesson_review_completions_student ON lesson_review_completions(student_id, lesson_id);
+CREATE INDEX IF NOT EXISTS idx_learning_reports_student_lesson ON lesson_learning_reports(student_id, lesson_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_learning_reports_review_queue ON lesson_learning_reports(status, submitted_at);
 CREATE INDEX IF NOT EXISTS idx_evaluations_student ON evaluations(student_id);
 CREATE INDEX IF NOT EXISTS idx_feedbacks_user ON feedbacks(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feedbacks_status ON feedbacks(status, priority, updated_at DESC);

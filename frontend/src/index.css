@@ -8,8 +8,43 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color: #172033;
+  background: #f4f7fb;
 }
 
 #root {
   min-height: 100vh;
+}
+
+.page-container { width: 100%; max-width: 1440px; margin: 0 auto; padding: 24px; }
+.page-heading { margin-bottom: 20px; }
+.page-heading h2 { margin-bottom: 4px !important; }
+.learning-shell { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+.learning-workbench { display: grid; grid-template-columns: 230px minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+.learning-sticky { position: sticky; top: 80px; }
+.content-card { border: 1px solid #e5eaf0; box-shadow: 0 8px 24px rgba(31,45,61,.05); border-radius: 12px; }
+.mentor-review-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+.mentor-review-aside { position: sticky; top: 80px; }
+.page-heading > div:first-child { min-width: 0; }
+.page-heading > div:last-child, .page-heading > .ant-space { flex-shrink: 0; }
+.learning-workbench > div { min-width: 0; }
+.learning-workbench .ant-card-head-title { white-space: normal; }
+.learning-workbench .ant-alert-description { line-height: 1.7; }
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) {
+  .learning-shell, .learning-workbench, .mentor-review-layout { grid-template-columns: 1fr; }
+  .learning-sticky, .mentor-review-aside { position: static; }
+  .learning-workbench > .learning-sticky:first-child { order: -1; overflow-x: auto; }
+  .page-heading { flex-direction: column; }
+  .page-heading > div:last-child, .page-heading > .ant-space { width: 100%; flex-wrap: wrap; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .page-container { padding: 16px; }
+  .page-heading h2 { font-size: 22px !important; }
+  .metric-grid { grid-template-columns: 1fr; }
+  .learning-workbench { gap: 12px; }
+  .learning-workbench .ant-card-body { padding: 16px; }
+  .learning-workbench .ant-btn-lg { width: 100%; min-height: 44px; }
+  .mentor-review-layout .ant-table-wrapper { overflow-x: auto; }
 }

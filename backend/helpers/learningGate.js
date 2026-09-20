@@ -1,0 +1,140 @@
+const db = require('../config/database');
+
+function cardStats(studentId, lessonId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN p.completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed
+    FROM knowledge_cards c
+    LEFT JOIN student_card_progress p ON p.card_id = c.id AND p.student_id = ?
+    WHERE c.lesson_id = ? AND c.status = 'published'
+  `).get(studentId, lessonId);
+}
+
+function isReviewCompleted(studentId, lessonId) {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM lesson_review_completions WHERE student_id = ? AND lesson_id = ?
+  `).get(studentId, lessonId));
+}
+
+function consolidationStats(studentId, lessonId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN EXISTS (
+             SELECT 1 FROM works w
+             WHERE w.task_id = t.id AND w.student_id = ?
+           ) THEN 1 ELSE 0 END) AS submitted,
+           SUM(CASE WHEN EXISTS (
+             SELECT 1 FROM works w
+             WHERE w.task_id = t.id AND w.student_id = ? AND w.review_status = 'approved'
+           ) THEN 1 ELSE 0 END) AS approved
+    FROM tasks t
+    WHERE t.lesson_id = ? AND t.status = 'active' AND t.require_upload = 1
+  `).get(studentId, studentId, lessonId);
+}
+
+function latestReport(studentId, lessonId) {
+  return db.prepare(`
+    SELECT * FROM lesson_learning_reports
+    WHERE student_id = ? AND lesson_id = ?
+    ORDER BY version DESC, id DESC LIMIT 1
+  `).get(studentId, lessonId) || null;
+}
+
+function areRequiredCardsCompleted(studentId, lessonId) {
+  const stats = cardStats(studentId, lessonId);
+  return stats.total > 0 && Number(stats.completed || 0) === stats.total;
+}
+
+function areConsolidationTasksSubmitted(studentId, lessonId) {
+  const stats = consolidationStats(studentId, lessonId);
+  return stats.total === 0 || Number(stats.submitted || 0) === stats.total;
+}
+
+function canSubmitLessonReport(studentId, lessonId) {
+  return isReviewCompleted(studentId, lessonId)
+    && areRequiredCardsCompleted(studentId, lessonId);
+}
+
+function getLessonLearningState(studentId, lessonId) {
+  const reviewCompleted = isReviewCompleted(studentId, lessonId);
+  const cards = cardStats(studentId, lessonId);
+  const report = latestReport(studentId, lessonId);
+  const cardsCompleted = Number(cards.completed || 0);
+  const cardsDone = cards.total > 0 && cardsCompleted === cards.total;
+  const cardPercent = cards.total === 0 ? 0 : Math.round((cardsCompleted / cards.total) * 35);
+  const reportSubmitted = Boolean(report && report.status !== 'rejected');
+  const percent = Math.min(100,
+    (reviewCompleted ? 25 : 0)
+      + cardPercent
+      + (reportSubmitted ? 25 : 0)
+      + (report?.status === 'approved' ? 15 : 0));
+  const completed = reviewCompleted && cardsDone && report?.status === 'approved';
+
+  return {
+    percent,
+    review_completed: reviewCompleted,
+    cards_total: cards.total,
+    cards_completed: cardsCompleted,
+    cards_done: cardsDone,
+    cards_unlocked: reviewCompleted,
+    report_unlocked: reviewCompleted && cardsDone,
+    report_status: report?.status || null,
+    status: completed ? 'completed'
+      : report?.status === 'rejected' ? 'revision'
+        : reportSubmitted ? 'reviewing'
+          : cardsDone ? 'reporting'
+            : reviewCompleted ? 'learning' : 'reviewing_lesson',
+    completed,
+  };
+}
+
+function recalculateLessonProgress(studentId, lessonId) {
+  const state = getLessonLearningState(studentId, lessonId);
+  db.prepare(`
+    INSERT INTO lesson_progress (student_id, lesson_id, progress, completed_at, updated_at)
+    VALUES (?, ?, ?, CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP)
+    ON CONFLICT(student_id, lesson_id) DO UPDATE SET
+      progress = excluded.progress,
+      completed_at = CASE
+        WHEN excluded.completed_at IS NOT NULL THEN COALESCE(lesson_progress.completed_at, excluded.completed_at)
+        ELSE NULL
+      END,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(studentId, lessonId, state.percent, state.completed ? 1 : 0);
+  return state;
+}
+
+function recordCompletionGrowth(studentId, lessonId, recordedBy = null) {
+  const state = getLessonLearningState(studentId, lessonId);
+  if (!state.completed) return false;
+  const context = db.prepare(`
+    SELECT l.title AS lesson_title, r.version
+    FROM lessons l
+    JOIN lesson_learning_reports r ON r.id = (
+      SELECT latest.id FROM lesson_learning_reports latest
+      WHERE latest.student_id = ? AND latest.lesson_id = l.id AND latest.status = 'approved'
+      ORDER BY latest.version DESC, latest.id DESC LIMIT 1
+    )
+    WHERE l.id = ?
+  `).get(studentId, lessonId);
+  if (!context) return false;
+  const description = `完成课时《${context.lesson_title}》课后学习闭环（报告第 ${context.version} 版）`;
+  const exists = db.prepare(
+    "SELECT 1 FROM growth_records WHERE student_id = ? AND event_type = 'system' AND description = ? LIMIT 1"
+  ).get(studentId, description);
+  if (exists) return false;
+  db.prepare("INSERT INTO growth_records (student_id,event_type,description,recorded_by) VALUES (?,'system',?,?)")
+    .run(studentId, description, recordedBy);
+  return true;
+}
+
+module.exports = {
+  getLessonLearningState,
+  areRequiredCardsCompleted,
+  areConsolidationTasksSubmitted,
+  isReviewCompleted,
+  canSubmitLessonReport,
+  recalculateLessonProgress,
+  recordCompletionGrowth,
+  latestReport,
+};

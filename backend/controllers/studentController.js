@@ -751,6 +751,9 @@ exports.detail = (req, res) => {
         return res.status(403).json({ error: '学生不存在或无权访问' });
       }
     } else {
+      if (viewer.role === 'teacher') {
+        return res.status(403).json({ error: '教师只能查看明确分配给自己的学生' });
+      }
       // 非学生目标（教师/执行导师/管理员）：仅教职工可查看
       if (!isStaff(viewer.role)) {
         return res.status(400).json({ error: '无权查看该用户' });

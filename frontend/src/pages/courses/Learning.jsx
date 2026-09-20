@@ -7,7 +7,7 @@ import { courseAPI, workAPI } from '../../api';
 const { Title, Text } = Typography;
 
 const REVIEW_STATUS = {
-  pending: { label: '待批改', color: 'orange' },
+  pending: { label: '待评审', color: 'orange' },
   rejected: { label: '需修改', color: 'red' },
   approved: { label: '已通过', color: 'green' },
 };
@@ -129,7 +129,7 @@ export default function Learning() {
                   {task.deadline && <Tag>截止 {task.deadline}</Tag>}
                 </Space>
                 {task.lesson_title && <Text type="secondary">所属课时：{task.lesson_title}</Text>}
-                <Button size="small" type="link" onClick={() => navigate(`/tasks/${task.id}`)}>查看任务详情</Button>
+                <Button size="small" type="link" onClick={() => navigate(`/courses/${id}/lessons/${task.lesson_id}/learn`)}>进入课后学习</Button>
               </Space>
             </Card>
           ))
