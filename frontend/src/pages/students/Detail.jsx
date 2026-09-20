@@ -179,7 +179,7 @@ export default function StudentDetail() {
         </p>)}
       </Card>}
       {!isStudentTarget && ((detail.taughtCourses?.length > 0) || (detail.managedCourses?.length > 0)) && (
-        <Card title={student.role === 'teacher' ? '授课课程' : '管理课程'} style={{ marginTop: 16 }}>
+        <Card title={student.role === 'teacher' ? '历史关联课程' : '管理课程'} style={{ marginTop: 16 }}>
           <Space wrap>
             {(detail.taughtCourses || detail.managedCourses || []).map((c) => (
               <Link key={c.id} to={`/courses/${c.id}`}>

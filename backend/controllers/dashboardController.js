@@ -12,7 +12,7 @@ const ROLE_PROMPTS = {
   ],
   academic_mentor: [
     { emoji: '💡', desc: '先验证你的假设，再修改方案——引导学生在实验中寻找证据。', color: '#1a73e8' },
-    { emoji: '📋', desc: '及时批改待评审作品，学生对反馈的响应速度会明显提升。', color: '#f9ab00' },
+    { emoji: '📋', desc: '及时评审学生作品，学生对反馈的响应速度会明显提升。', color: '#f9ab00' },
     { emoji: '🎯', desc: '把大问题拆成小问题，让学生逐一攻克，比直接给答案更有效。', color: '#0d904f' },
   ],
   teacher: [
@@ -87,33 +87,25 @@ exports.index = (req, res) => {
       `).get();
     }
 
-    // === 教师/导师端：显示负责的课程和学生进度 ===
-    if (['academic_mentor', 'teacher', 'admin'].includes(user.role)) {
-      // 导师/管理员：自己创建的课程；教师：本校学生参与的已发布课程
-      const myCourses = user.role === 'teacher'
-        ? db.prepare(`
-            SELECT c.*,
-              (SELECT COUNT(*) FROM enrollments WHERE course_id = c.id AND status = 'active') as student_count,
-              (SELECT COUNT(DISTINCT COALESCE(w.parent_work_id, w.id)) FROM works w JOIN enrollments e ON w.enrollment_id = e.id WHERE e.course_id = c.id) as work_count
-            FROM courses c
-            WHERE c.status = 'published' AND EXISTS (
-              SELECT 1
-              FROM enrollments e
-              JOIN users s ON s.id = e.student_id
-              WHERE e.course_id = c.id
-                AND e.status = 'active'
-                AND s.school_id = ?
-            )
-            ORDER BY c.updated_at DESC
-          `).all(user.school_id || 0)
-        : db.prepare(`
+    // === 导师/管理员端：显示负责的课程和学生进度 ===
+    if (['academic_mentor', 'admin'].includes(user.role)) {
+      const myCourses = user.role === 'admin' ? db.prepare(`
             SELECT c.*,
               (SELECT COUNT(*) FROM enrollments WHERE course_id = c.id AND status = 'active') as student_count,
               (SELECT COUNT(DISTINCT COALESCE(w.parent_work_id, w.id)) FROM works w JOIN enrollments e ON w.enrollment_id = e.id WHERE e.course_id = c.id) as work_count
             FROM courses c
             WHERE c.created_by = ? AND c.status != 'archived'
             ORDER BY c.updated_at DESC
-          `).all(user.id);
+          `).all(user.id) : db.prepare(`
+            SELECT c.*,
+              (SELECT COUNT(*) FROM enrollments WHERE course_id = c.id AND status = 'active') AS student_count,
+              (SELECT COUNT(DISTINCT COALESCE(w.parent_work_id, w.id)) FROM works w JOIN enrollments e ON w.enrollment_id = e.id WHERE e.course_id = c.id) AS work_count
+            FROM courses c
+            WHERE c.status != 'archived' AND (c.created_by = ? OR EXISTS (
+              SELECT 1 FROM lessons own_l WHERE own_l.course_id = c.id AND own_l.instructor_id = ?
+            ))
+            ORDER BY c.updated_at DESC
+          `).all(user.id, user.id);
 
       // 所有课程不再下发（前端未消费，避免冗余数据）；如需可按 status/created_by 查询
 
@@ -125,16 +117,7 @@ exports.index = (req, res) => {
         LEFT JOIN enrollments e ON w.enrollment_id = e.id
         LEFT JOIN courses c ON e.course_id = c.id
         ORDER BY w.created_at DESC LIMIT 10
-      `).all() : user.role === 'teacher' ? db.prepare(`
-        SELECT w.*, u.real_name as student_name, c.title as course_title
-        FROM works w
-        JOIN users u ON w.student_id = u.id
-        LEFT JOIN enrollments e ON w.enrollment_id = e.id
-        LEFT JOIN courses c ON e.course_id = c.id
-        WHERE (u.teacher_id = ? OR (u.teacher_id IS NULL AND u.school_id = ?))
-          AND w.enrollment_id IS NOT NULL AND c.id IS NOT NULL
-        ORDER BY w.created_at DESC LIMIT 10
-      `).all(user.id, user.school_id || 0) : db.prepare(`
+      `).all() : db.prepare(`
         SELECT w.*, u.real_name as student_name, c.title as course_title
         FROM works w
         JOIN users u ON w.student_id = u.id
@@ -150,9 +133,26 @@ exports.index = (req, res) => {
       viewData.recentWorks = recentWorks.map(toFileDto);
     }
 
+    if (user.role === 'teacher') {
+      viewData.observerSummary = {
+        assignedStudentCount: db.prepare(
+          "SELECT COUNT(*) AS count FROM users WHERE role = 'student' AND teacher_id = ? AND is_active = 1"
+        ).get(user.id).count,
+      };
+      viewData.recentWorks = db.prepare(`
+        SELECT w.*, u.real_name AS student_name, c.title AS course_title
+        FROM works w
+        JOIN users u ON u.id = w.student_id AND u.teacher_id = ?
+        JOIN enrollments e ON e.id = w.enrollment_id
+        JOIN courses c ON c.id = e.course_id
+        WHERE w.review_status = 'approved'
+        ORDER BY w.updated_at DESC LIMIT 10
+      `).all(user.id).map(toFileDto);
+    }
+
     // === 学生端：显示参与的课程、进度、反思入口 ===
     if (user.role === 'student') {
-      // 参与的课程（仅有效报名且已发布的课程；选课由执行导师/教师/管理员统一导入）
+      // 参与的课程（仅有效报名且已发布的课程；选课由执行导师/管理员统一导入）
       const myCourses = db.prepare(`
         SELECT c.*, e.id as enrollment_id, e.enrolled_at,
           (SELECT COUNT(DISTINCT COALESCE(w2.parent_work_id, w2.id)) FROM works w2 WHERE w2.student_id = ? AND w2.enrollment_id = e.id) as my_work_count,

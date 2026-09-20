@@ -5,11 +5,14 @@ import { useNavigate } from 'react-router-dom';
 import { notificationAPI } from '../../api';
 import useNotifications from '../../hooks/useNotifications';
 import NotificationItem from './NotificationItem';
+import { useAuth } from '../../store/AuthContext';
+import { canRoleAccessPath } from '../../utils/roleNavigation';
 
 const { Text } = Typography;
 
 export default function NotificationBell() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { unreadCount, reduceUnread } = useNotifications();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -36,7 +39,8 @@ export default function NotificationBell() {
       reduceUnread();
     }
     setOpen(false);
-    navigate(notification.action_url || `/notifications/${notification.id}`);
+    const detailPath = `/notifications/${notification.id}`;
+    navigate(canRoleAccessPath(user?.role, notification.action_url) ? notification.action_url : detailPath);
   };
 
   const content = (

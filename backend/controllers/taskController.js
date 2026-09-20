@@ -6,8 +6,10 @@ function canManageTask(user, taskId) {
     SELECT 1 FROM tasks t
     JOIN lessons l ON l.id = t.lesson_id
     JOIN courses c ON c.id = l.course_id
-    WHERE t.id = ? AND c.created_by = ?
-  `).get(taskId, user.id);
+    WHERE t.id = ? AND (c.created_by = ? OR EXISTS (
+      SELECT 1 FROM lessons own_l WHERE own_l.course_id = c.id AND own_l.instructor_id = ?
+    ))
+  `).get(taskId, user.id, user.id);
 }
 
 function taskStatus(task, userId) {
@@ -26,38 +28,45 @@ function taskStatusFromReview(reviewStatus) {
   return 'submitted';
 }
 
+function taskStatusFromLearning(progress, reportStatus) {
+  if (Number(progress || 0) >= 100 || reportStatus === 'approved') return 'completed';
+  if (reportStatus === 'submitted') return 'submitted';
+  if (Number(progress || 0) > 0 || reportStatus === 'rejected') return 'in_progress';
+  return 'pending';
+}
+
 function taskQuery(user) {
   const userId = user.role === 'student' ? user.id : null;
-  // 任务可见范围：学生=已报名课程；教师=本校学生相关课程；执行导师=自己管理课程；管理员=全部
+  // 任务可见范围：学生=已报名课程；执行导师=自己管理课程；管理员=全部
   const scopeConditions = [];
   const scopeParams = [];
   if (user.role === 'student') {
     scopeConditions.push('EXISTS (SELECT 1 FROM enrollments e WHERE e.course_id = c.id AND e.student_id = ? AND e.status = ?)');
     scopeParams.push(user.id, 'active');
-  } else if (user.role === 'teacher') {
-    scopeConditions.push(`EXISTS (
-      SELECT 1 FROM enrollments e2
-      JOIN users s2 ON s2.id = e2.student_id
-      WHERE e2.course_id = c.id AND e2.status = 'active' AND s2.school_id = ?
-    )`);
-    scopeParams.push(user.school_id || 0);
   } else if (user.role === 'academic_mentor') {
-    scopeConditions.push('c.created_by = ?');
-    scopeParams.push(user.id);
+    scopeConditions.push('(c.created_by = ? OR EXISTS (SELECT 1 FROM lessons own_l WHERE own_l.course_id = c.id AND own_l.instructor_id = ?))');
+    scopeParams.push(user.id, user.id);
   }
   const scopeSql = scopeConditions.length ? ` AND ${scopeConditions.join(' AND ')}` : '';
 
   const tasks = db.prepare(`
     SELECT t.*, l.title AS lesson_title, l.course_id, c.title AS course_title,
       (SELECT review_status FROM works WHERE task_id = t.id AND student_id = ? ORDER BY version DESC, created_at DESC, id DESC LIMIT 1) AS review_status,
-      (SELECT id FROM works WHERE task_id = t.id AND student_id = ? ORDER BY version DESC, created_at DESC, id DESC LIMIT 1) AS work_id
+      (SELECT id FROM works WHERE task_id = t.id AND student_id = ? ORDER BY version DESC, created_at DESC, id DESC LIMIT 1) AS work_id,
+      (SELECT progress FROM lesson_progress WHERE student_id = ? AND lesson_id = l.id) AS learning_progress,
+      (SELECT status FROM lesson_learning_reports WHERE student_id = ? AND lesson_id = l.id ORDER BY version DESC, id DESC LIMIT 1) AS report_status
     FROM tasks t
     JOIN lessons l ON l.id = t.lesson_id
     JOIN courses c ON c.id = l.course_id
     WHERE c.status = 'published' AND t.status = 'active'${scopeSql}
     ORDER BY c.title, l.sort_order, t.sort_order, t.created_at
-  `).all(userId || null, userId || null, ...scopeParams);
-  return tasks.map((task) => ({ ...task, status: taskStatusFromReview(task.review_status) }));
+  `).all(userId || null, userId || null, userId || null, userId || null, ...scopeParams);
+  return tasks.map((task) => ({
+    ...task,
+    status: user.role === 'student'
+      ? taskStatusFromLearning(task.learning_progress, task.report_status)
+      : taskStatusFromReview(task.review_status),
+  }));
 }
 
 exports.list = (req, res) => {
@@ -86,15 +95,7 @@ exports.detail = (req, res) => {
       ? db.prepare('SELECT id FROM enrollments WHERE student_id = ? AND course_id = ? AND status = ?').get(userId, task.course_id, 'active')
       : null;
     if (userId && !enrollment) return res.status(404).json({ error: '任务不存在' });
-    if (req.user.role === 'teacher') {
-      const related = db.prepare(`
-        SELECT 1 FROM enrollments e
-        JOIN users s ON s.id = e.student_id
-        WHERE e.course_id = ? AND e.status = 'active' AND s.school_id = ? LIMIT 1
-      `).get(task.course_id, req.user.school_id || 0);
-      if (!related) return res.status(404).json({ error: '任务不存在' });
-    }
-    if (req.user.role === 'academic_mentor' && task.created_by !== req.user.id) {
+    if (req.user.role === 'academic_mentor' && !canManageTask(req.user, task.id)) {
       return res.status(404).json({ error: '任务不存在' });
     }
     const works = userId ? db.prepare(`
@@ -105,7 +106,13 @@ exports.detail = (req, res) => {
       FROM works w LEFT JOIN work_reviews r ON r.work_id = w.id
       WHERE w.task_id = ? AND w.student_id = ? ORDER BY w.version DESC
     `).all(task.id, userId) : [];
-    res.json({ task: { ...task, enrollment_id: enrollment?.id || null, status: taskStatus(task, userId) }, works });
+    const learning = userId ? db.prepare(`
+      SELECT lp.progress,
+        (SELECT status FROM lesson_learning_reports WHERE student_id = ? AND lesson_id = ? ORDER BY version DESC, id DESC LIMIT 1) AS report_status
+      FROM (SELECT 1) seed
+      LEFT JOIN lesson_progress lp ON lp.student_id = ? AND lp.lesson_id = ?
+    `).get(userId, task.lesson_id, userId, task.lesson_id) : null;
+    res.json({ task: { ...task, enrollment_id: enrollment?.id || null, status: userId ? taskStatusFromLearning(learning?.progress, learning?.report_status) : taskStatus(task, userId) }, works });
   } catch (err) {
     console.error('任务详情错误:', err);
     res.status(500).json({ error: '加载任务详情失败' });

@@ -13,6 +13,12 @@ const NOTIFICATION_EVENTS = {
   WORK_RESUBMITTED: 'work.resubmitted',
   WORK_REVIEWED: 'work.reviewed',
   WORK_DELETED: 'work.deleted',
+  LESSON_REPORT_SUBMITTED: 'lesson.report_submitted',
+  LESSON_REPORT_REJECTED: 'lesson.report_rejected',
+  LESSON_REPORT_APPROVED: 'lesson.report_approved',
+  LESSON_LEARNING_COMPLETED: 'lesson.learning_completed',
+  LEARNING_CARD_COMPLETED: 'learning.card_completed',
+  LEARNING_CONSOLIDATION_READY: 'learning.consolidation_ready',
   ENROLLMENT_REMOVED: 'course.enrollment_removed',
 };
 

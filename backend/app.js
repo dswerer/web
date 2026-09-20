@@ -82,6 +82,9 @@ app.use(`${API_PREFIX}/works`, require('./routes/works'));
 app.use(`${API_PREFIX}/archives`, require('./routes/archives'));
 app.use(`${API_PREFIX}/feedback`, require('./routes/feedback'));
 app.use(`${API_PREFIX}/notifications`, require('./routes/notifications'));
+app.use(`${API_PREFIX}/learning`, require('./routes/learning'));
+app.use(`${API_PREFIX}/mentor-reviews`, require('./routes/mentorReview'));
+app.use(`${API_PREFIX}/observer`, require('./routes/observer'));
 
 // 健康检查
 app.get(`${API_PREFIX}/health`, (req, res) => {

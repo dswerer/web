@@ -9,6 +9,7 @@ import StatusTag from '../../components/common/StatusTag';
 const { Title } = Typography;
 
 const canManage = (role) => ['admin', 'academic_mentor'].includes(role);
+const canViewOperationalStats = (role) => ['admin', 'academic_mentor'].includes(role);
 
 export default function CourseList() {
   const { user } = useAuth();
@@ -35,8 +36,8 @@ export default function CourseList() {
     { title: '适用学段', dataIndex: 'grade_level', key: 'grade_level' },
     { title: '难度', dataIndex: 'difficulty', key: 'difficulty', render: (v) => <Tag>{v}</Tag> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v) => <StatusTag value={v} label={({ published: '已发布', draft: '草稿', archived: '已归档' })[v] || v} type={v === 'published' ? 'success' : v === 'archived' ? 'default' : 'warning'} /> },
-    ...(user?.role !== 'student' ? [{ title: '学习进度', dataIndex: 'progress', key: 'progress', render: (v) => `${v || 0}%` }] : []),
-    ...(user?.role !== 'student' ? [{ title: '学生数', dataIndex: 'student_count', key: 'student_count' }, { title: '创建者', dataIndex: 'creator_name', key: 'creator_name' }] : []),
+    ...(canViewOperationalStats(user?.role) ? [{ title: '学习进度', dataIndex: 'progress', key: 'progress', render: (v) => `${v || 0}%` }] : []),
+    ...(canViewOperationalStats(user?.role) ? [{ title: '学生数', dataIndex: 'student_count', key: 'student_count' }, { title: '创建者', dataIndex: 'creator_name', key: 'creator_name' }] : []),
     ...(canManage(user?.role) ? [{
       title: '操作', key: 'actions', render: (_, r) => (
         <Space>
@@ -62,7 +63,7 @@ export default function CourseList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>📚 课程管理</Title>
+        <Title level={4} style={{ margin: 0 }}>{canManage(user?.role) ? '课程管理' : '课程浏览'}</Title>
         {canManage(user?.role) && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/courses/create')}>创建课程</Button>
         )}

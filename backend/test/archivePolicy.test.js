@@ -1,6 +1,6 @@
 // 批次D：档案权限与评价收敛回归测试
 // 覆盖：导师学生列表/档案树/详情三入口一致、导师档案课程过滤、遗留NULL数据可见性、
-//       教师档案公开作品、成长观察范围、评价权限与课程绑定
+//       教师仅看明确分配学生、教师禁止写成长记录、评价权限与课程绑定
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -155,7 +155,7 @@ test('导师档案仅含自己课程的作品/评价/反思，遗留NULL数据�
   assert.deepEqual(adminArchive.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3], '管理员可见全部作品');
 });
 
-test('教师档案仅含本校公开作品，跨校学生403', async () => {
+test('教师档案仅含明确分配学生的公开作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const archive = await (await authed(tokenA, 'GET', '/api/archives/generate?student_id=4', null)).json();
   assert.deepEqual(archive.works.map((w) => w.id), [1], '仅approved作品');
@@ -166,9 +166,9 @@ test('教师档案仅含本校公开作品，跨校学生403', async () => {
   assert.equal((await authed(tokenB, 'GET', '/api/archives/generate?student_id=4', null)).status, 403, '跨校学生403');
 });
 
-test('成长观察：教师限本校，导师/管理员全量', async () => {
+test('成长记录：教师禁止写入，导师/管理员可写', async () => {
   assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 5, description: '外校记录' })).status, 403);
-  assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 4, description: '本校观察' })).status, 200);
+  assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 4, description: '本校观察' })).status, 403);
   assert.equal((await authed(await tokenFor('导师B'), 'POST', '/api/archives/growth-records', { student_id: 5, description: '导师观察' })).status, 200);
 });
 

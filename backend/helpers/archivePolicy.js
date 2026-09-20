@@ -16,19 +16,19 @@ function studentInMentorCourses(mentorId, studentId) {
   `).get(studentId, mentorId, mentorId);
 }
 
-// 查看档案：admin 全部；学生本人；教师本校；导师=历史上参加过其课程的学生
+// 查看档案：admin 全部；学生本人；教师仅明确分配学生；导师=历史上参加过其课程的学生
 function canViewArchive(user, student) {
   if (user.role === 'admin') return true;
   if (user.role === 'student') return student.id === user.id;
-  if (user.role === 'teacher') return !!user.school_id && student.school_id === user.school_id;
+  if (user.role === 'teacher') return student.teacher_id === user.id;
   if (user.role === 'academic_mentor') return studentInMentorCourses(user.id, student.id);
   return false;
 }
 
-// 成长观察：admin/导师全量；教师限本校
+// 成长记录只有管理员/执行导师可写；教师始终只读
 function canAddObservation(user, student) {
   if (['admin', 'academic_mentor'].includes(user.role)) return true;
-  return user.role === 'teacher' && !!user.school_id && student.school_id === user.school_id;
+  return false;
 }
 
 // 课程评价：admin 兜底；导师（其课程关系在控制器内结合 enrollment 校验）
