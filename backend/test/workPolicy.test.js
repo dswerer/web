@@ -1,5 +1,5 @@
 // 批次C：作品权限与版本治理回归测试
-// 覆盖：教师负责学生作品范围、导师课程归属（创建者/授课人）、评审范围、删除矩阵、
+// 覆盖：教师只读负责学生作品、导师课程归属（创建者/授课人）、评审范围、删除矩阵、
 //       根唯一约束、作品计数、DTO脱敏、时间轴work_id事件、遗留NULL数据可见性
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -142,7 +142,7 @@ function uploadWork(token, form) {
 test('教师作品列表仅包含负责学生的全部有效报名作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const listA = await (await authed(tokenA, 'GET', '/api/works', null)).json();
-  assert.deepEqual(listA.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3, 5, 12], '甲老师应看到负责学生与本校未分配学生的关联报名作品');
+  assert.deepEqual(listA.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3, 5], '甲老师只应看到明确分配学生的关联报名作品');
 
   const tokenB = await tokenFor('乙老师');
   const listB = await (await authed(tokenB, 'GET', '/api/works', null)).json();
@@ -160,18 +160,19 @@ test('教师详情/下载限负责学生，且可查看全部历史版本', asyn
   assert.deepEqual(detail.versions.map((v) => v.id), [3, 2]);
 });
 
-test('教师Dashboard动态包含负责学生的全部状态作品', async () => {
+test('教师Dashboard只读展示负责学生的已通过成果', async () => {
   const token = await tokenFor('甲老师');
   const dash = await (await authed(token, 'GET', '/api/dashboard', null)).json();
-  assert.ok(dash.recentWorks.some((w) => w.review_status === 'pending'));
+  assert.ok(dash.recentWorks.length > 0);
+  assert.ok(dash.recentWorks.every((w) => w.review_status === 'approved'));
   assert.ok(dash.recentWorks.every((w) => !('file_path' in w)));
 });
 
-test('教师可查看并批改本校未分配学生的关联报名作品', async () => {
+test('教师不可查看或批改同校未分配学生作品', async () => {
   const token = await tokenFor('甲老师');
-  assert.equal((await authed(token, 'GET', '/api/works/12', null)).status, 200);
+  assert.equal((await authed(token, 'GET', '/api/works/12', null)).status, 403);
   const review = await authed(token, 'POST', '/api/works/12/review', { status: 'rejected', comment: '请补充实验记录' });
-  assert.equal(review.status, 200);
+  assert.equal(review.status, 403);
 });
 
 test('学生Dashboard作品DTO不含file_path', async () => {
@@ -207,13 +208,13 @@ test('导师仅可批改自己课程作品', async () => {
   assert.equal((await authed(tokenB, 'POST', '/api/works/2/review', { status: 'rejected' })).status, 403, '他人课程不可批改');
 });
 
-test('教师仅可批改负责学生的待批改作品', async () => {
+test('教师对任何作品均不可评审', async () => {
   const token = await tokenFor('甲老师');
   const own = await authed(token, 'POST', '/api/works/5/review', { status: 'rejected', comment: '请补充说明' });
-  assert.equal(own.status, 200, '教师可批改负责学生的待批改作品');
+  assert.equal(own.status, 403, '教师不可评审负责学生作品');
 
   const other = await authed(token, 'POST', '/api/works/4/review', { status: 'rejected' });
-  assert.equal(other.status, 403, '教师不可批改非负责学生的作品');
+  assert.equal(other.status, 403, '教师不可评审非负责学生作品');
 });
 
 test('作品删除矩阵', async () => {

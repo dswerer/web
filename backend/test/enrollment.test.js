@@ -1,4 +1,4 @@
-// 选课闭环接口测试：导入权限/范围、不可退课、管理员异常修正、教师任务范围、迁移标记
+// 选课闭环接口测试：导入权限/范围、不可退课、管理员异常修正、教师退出任务链路、迁移标记
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -115,7 +115,7 @@ function enrollmentRows() {
 
 test('新库迁移标记到最新版本', () => {
   const versions = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version);
-  assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   const cols = db.prepare('PRAGMA table_info(enrollments)').all().map((c) => c.name);
   for (const col of ['status', 'enrolled_by', 'removed_at', 'removed_by', 'remove_reason']) {
     assert.ok(cols.includes(col), `缺少列 ${col}`);
@@ -214,7 +214,7 @@ test('移除后学生不可见该课程，再次导入可复活', async () => {
   assert.ok(body.courses.some((c) => c.id === 1), '复活后课程列表应包含该课程');
 });
 
-test('课时授课人必须是启用的教师或执行导师', async () => {
+test('课时授课人必须是启用的执行导师', async () => {
   const token = await tokenFor('管理员');
   const res = await authed(token, 'POST', '/api/courses/1/lessons', { title: '第二讲', instructor_id: 4 });
   assert.equal(res.status, 400);
@@ -222,22 +222,20 @@ test('课时授课人必须是启用的教师或执行导师', async () => {
   assert.equal(okRes.status, 200);
 });
 
-test('教师任务列表包含本校学生参与课程的任务', async () => {
+test('教师不可进入课程任务接口', async () => {
   const tokenA = await tokenFor('甲老师');
   const resA = await authed(tokenA, 'GET', '/api/tasks', null);
-  const bodyA = await resA.json();
-  assert.ok(bodyA.tasks.some((t) => t.id === 1), '授课教师应看到任务');
+  assert.equal(resA.status, 403);
 
   const tokenB = await tokenFor('乙老师');
   const resB = await authed(tokenB, 'GET', '/api/tasks', null);
-  const bodyB = await resB.json();
-  assert.ok(bodyB.tasks.some((t) => t.id === 1), '本校学生参与的课程任务应可见');
+  assert.equal(resB.status, 403);
 });
 
-test('教师 Dashboard 展示授课课程，学生列表仅含已报名课程', async () => {
+test('教师 Dashboard 不进入课程执行链路，学生列表仅含已报名课程', async () => {
   const tokenA = await tokenFor('甲老师');
   const dashA = await (await authed(tokenA, 'GET', '/api/dashboard', null)).json();
-  assert.ok(dashA.myCourses.some((c) => c.id === 1), '授课教师首页应包含课程');
+  assert.equal(dashA.myCourses, undefined, '教师首页不应包含课程管理数据');
 
   const tokenS = await tokenFor('学生C');
   const list = await (await authed(tokenS, 'GET', '/api/courses', null)).json();
