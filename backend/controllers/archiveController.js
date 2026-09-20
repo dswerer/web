@@ -74,8 +74,13 @@ function loadStudentArchive(studentId, user) {
   const ability = db.prepare(`SELECT ROUND(AVG(problem_discovery),1) problem_discovery, ROUND(AVG(solution_design),1) solution_design, ROUND(AVG(hands_on),1) hands_on, ROUND(AVG(data_analysis),1) data_analysis, ROUND(AVG(presentation),1) presentation FROM work_reviews r JOIN works w ON w.id=r.work_id WHERE w.student_id=? AND w.id IN (SELECT value FROM json_each(?))`).get(studentId, JSON.stringify(works.map((w) => w.id)));
   const visibleWorkIds = new Set(works.map((work) => work.id));
   const growthRecords = db.prepare(`SELECT g.*, u.real_name recorder_name FROM growth_records g LEFT JOIN users u ON u.id=g.recorded_by WHERE g.student_id=? ORDER BY g.created_at DESC`).all(studentId)
-    .filter((record) => user.role !== 'academic_mentor' ||
-      (record.work_id ? visibleWorkIds.has(record.work_id) : record.recorded_by === user.id));
+    .filter((record) => {
+      if (user.role === 'teacher' && record.work_id) return visibleWorkIds.has(record.work_id);
+      if (user.role === 'academic_mentor') {
+        return record.work_id ? visibleWorkIds.has(record.work_id) : record.recorded_by === user.id;
+      }
+      return true;
+    });
   if (!growthRecords.length) {
     works.forEach((work) => growthRecords.push({ event_type: 'system', description: `提交作品《${work.title}》`, created_at: work.created_at }));
     growthRecords.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));

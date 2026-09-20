@@ -73,6 +73,7 @@ before(async () => {
   db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (1, 4, 'system', '课程1作品', 1)").run();
   db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (2, 4, 'system', '遗留作品', 3)").run();
   db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, recorded_by) VALUES (3, 4, 'teacher', '授课导师记录', 7)").run();
+  db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (4, 4, 'system', '待审作品', 2)").run();
 
   db.prepare("INSERT INTO evaluations (id, evaluator_id, student_id, enrollment_id, eval_type, score) VALUES (1, 6, 4, 1, 'process', 80)").run();
   db.prepare("INSERT INTO evaluations (id, evaluator_id, student_id, enrollment_id, eval_type, score) VALUES (2, 6, 4, NULL, 'process', 70)").run();
@@ -156,18 +157,19 @@ test('导师档案仅含自己课程的作品/评价/反思，遗留NULL数据�
   assert.deepEqual(archive.evaluations.map((e) => e.id), [1], '遗留NULL评价不可见');
   assert.deepEqual(archive.reflections.map((r) => r.id), [1], '遗留NULL反思不可见');
   assert.deepEqual(archive.courses.map((c) => c.enrollment_id), [1], '课程列表仅含导师负责课程');
-  assert.deepEqual(archive.growthRecords.map((record) => record.id), [1], '时间轴仅含可见课程作品');
+  assert.deepEqual(archive.growthRecords.map((record) => record.id).sort(), [1, 4], '时间轴仅含可见课程作品');
 
   const admin = await tokenFor('管理员');
   const adminArchive = await (await authed(admin, 'GET', '/api/archives/generate?student_id=4', null)).json();
   assert.deepEqual(adminArchive.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3], '管理员可见全部作品');
-  assert.deepEqual(adminArchive.growthRecords.map((record) => record.id).sort((a, b) => a - b), [1, 2, 3]);
+  assert.deepEqual(adminArchive.growthRecords.map((record) => record.id).sort((a, b) => a - b), [1, 2, 3, 4]);
 });
 
 test('教师档案仅含明确分配学生的公开作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const archive = await (await authed(tokenA, 'GET', '/api/archives/generate?student_id=4', null)).json();
   assert.deepEqual(archive.works.map((w) => w.id), [1], '仅approved作品');
+  assert.deepEqual(archive.growthRecords.filter((r) => r.work_id).map((r) => r.work_id), [1], '时间轴不泄漏待审作品');
   assert.equal((await authed(tokenA, 'GET', '/api/students/8', null)).status, 403, '同校未分配学生不可见');
   assert.equal((await authed(tokenA, 'GET', '/api/archives/generate?student_id=8', null)).status, 403, '同校未分配学生档案不可见');
 
