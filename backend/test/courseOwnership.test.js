@@ -23,7 +23,7 @@ async function api(url, method = 'GET', data, token = tokens.mentor_a) {
   return { status: res.status, body: await res.json() };
 }
 before(async () => {
-  for (const [index, [username, role]] of [['admin','admin'], ['mentor_a','academic_mentor'], ['mentor_b','academic_mentor'], ['teacher','teacher'], ['student','student']].entries()) {
+  for (const [index, [username, role]] of [['admin','admin'], ['mentor_a','academic_mentor'], ['mentor_b','academic_mentor'], ['teacher','teacher'], ['student','student'], ['media','media']].entries()) {
     db.prepare('INSERT INTO users (id,username,real_name,password_hash,role) VALUES (?,?,?,?,?)').run(index+1,username,username,bcrypt.hashSync('user123',4),role);
   }
   for (const [id, owner] of [[1,2],[2,3],[3,1]]) {
@@ -34,7 +34,7 @@ before(async () => {
   }
   server = app.listen(0,'127.0.0.1'); await new Promise(r=>server.once('listening',r));
   base = `http://127.0.0.1:${server.address().port}`;
-  for (const username of ['admin','mentor_a','mentor_b','teacher','student']) tokens[username]=(await api('/auth/login','POST',{username,password:'user123'},null)).body.token;
+  for (const username of ['admin','mentor_a','mentor_b','teacher','student','media']) tokens[username]=(await api('/auth/login','POST',{username,password:'user123'},null)).body.token;
 });
 after(async () => { await new Promise(r=>server.close(r)); db.close(); fs.rmSync(dir,{recursive:true,force:true}); });
 
@@ -106,4 +106,22 @@ test('受邀授课导师可管理该课程，其他课程仍无权限', async ()
   const mentorProfile = await api('/students/2', 'GET', undefined, tokens.admin);
   assert.deepEqual(mentorProfile.body.managedCourses.map((course) => course.id).sort(), [1, 2]);
   assert.equal((await api('/courses/3', 'PUT', { title: '无关课程编辑' })).status, 403);
+});
+
+test('灵境小智按课程范围提供上下文，教师和新媒体不能调用', async () => {
+  assert.deepEqual((await api('/dashboard/ai/courses','GET',undefined,tokens.admin)).body.courses.map(c=>c.id).sort(),[1,2,3]);
+  assert.deepEqual((await api('/dashboard/ai/courses')).body.courses.map(c=>c.id).sort(),[1,2]);
+  for (const token of [tokens.teacher,tokens.media]) {
+    assert.equal((await api('/dashboard/ai/courses','GET',undefined,token)).status,403);
+    assert.equal((await api('/dashboard/ai/ask','POST',{question:'pbl',course_id:1},token)).status,403);
+  }
+  assert.equal((await api('/works','GET',undefined,tokens.media)).status,403);
+  const invited=await api('/dashboard/ai/ask','POST',{question:'pbl',course_id:2});
+  assert.equal(invited.status,200);
+  assert.match(invited.body.answer,/当前课程《授课导师编辑》/);
+  const other=await api('/dashboard/ai/ask','POST',{question:'pbl',course_id:3});
+  assert.equal(other.status,200);
+  assert.doesNotMatch(other.body.answer,/当前课程《/);
+  const admin=await api('/dashboard/ai/ask','POST',{question:'pbl',course_id:3},tokens.admin);
+  assert.match(admin.body.answer,/当前课程《/);
 });

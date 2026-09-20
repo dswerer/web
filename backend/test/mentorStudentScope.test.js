@@ -75,6 +75,7 @@ test('导师列表仅有课程相关学生，历史/归档关系保留，多课�
     assert.ok(rows.every(r=>[5,8,9].includes(r.id)));
   }
   assert.deepEqual(ids((await api('/students?school_id=2')).body.students),[8]);
+  assert.deepEqual(ids((await api('/students',tokens.mentor_b)).body.schools),[1]);
 });
 
 test('直接访问无关学生详情及档案返回403，相关学生允许',async()=>{
@@ -83,6 +84,8 @@ test('直接访问无关学生详情及档案返回403，相关学生允许',asy
     const response=await api(url);assert.equal(response.status,403,url);assert.equal(response.body.student,undefined);
   }
   assert.equal((await api('/students/5',tokens.mentor_b)).status,403);
+  assert.equal((await api('/students/3',tokens.mentor_a)).status,403);
+  assert.equal((await api('/students/3',tokens.admin)).status,200);
 });
 
 test('档案树、学校/班级批量导出和搜索均应用相同关系限制',async()=>{

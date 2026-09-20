@@ -3,7 +3,7 @@ const db = require('../config/database');
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { isStaff, isTeacher } = require('../middleware/auth');
+const { isTeacher } = require('../middleware/auth');
 const { buildUserTree } = require('../helpers/userTree');
 const { sanitizeUser } = require('../helpers/userDto');
 const { removeFilesAfterCommit, removeDirectoriesAfterCommit } = require('../helpers/fileLifecycle');
@@ -124,7 +124,10 @@ exports.list = (req, res) => {
       ? db.prepare(`SELECT DISTINCT s.id, s.name FROM schools s
           JOIN users u ON u.school_id = s.id
           WHERE u.role = 'student' AND u.teacher_id = ? ORDER BY s.name`).all(req.user.id)
-      : db.prepare('SELECT id, name FROM schools ORDER BY name').all();
+      : db.prepare(`SELECT DISTINCT s.id, s.name FROM schools s
+          JOIN users u ON u.school_id = s.id
+          WHERE u.role = 'student' AND ${mentorStudentScope()} ORDER BY s.name`)
+        .all(...mentorStudentParams(req.user.id));
 
     res.json({ title: '学生管理', students, schools, filters: req.query });
   } catch (err) {
@@ -753,15 +756,9 @@ exports.detail = (req, res) => {
         return res.status(403).json({ error: '学生不存在或无权访问' });
       }
     } else {
-      if (viewer.role === 'teacher') {
-        return res.status(403).json({ error: '教师只能查看明确分配给自己的学生' });
-      }
-      // 非学生目标（教师/执行导师/管理员）：仅教职工可查看
-      if (!isStaff(viewer.role)) {
-        return res.status(400).json({ error: '无权查看该用户' });
-      }
-      if (isTeacher(viewer.role) && target.role !== 'academic_mentor' && target.school_id !== viewer.school_id) {
-        return res.status(400).json({ error: '无权查看其他学校用户' });
+      // 账号管理与其他教职工资料仅管理员可查看；导师/教师只读授权学生。
+      if (viewer.role !== 'admin') {
+        return res.status(403).json({ error: '无权查看该用户' });
       }
     }
 
