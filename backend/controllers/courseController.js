@@ -9,6 +9,7 @@ const { toFileDto } = require('../helpers/fileDto');
 const { removeFilesAfterCommit } = require('../helpers/fileLifecycle');
 const notificationService = require('../services/notificationService');
 const { NOTIFICATION_EVENTS } = require('../constants/notification');
+const { courseBelongsToMentor } = require('../helpers/courseScope');
 
 function removeUploadedFile(file) {
   if (file?.path) {
@@ -17,9 +18,8 @@ function removeUploadedFile(file) {
 }
 
 function canManageCourse(user, courseId) {
-  if (user.role === 'admin' || user.role === 'academic_mentor') return true;
-  const course = db.prepare('SELECT created_by FROM courses WHERE id = ?').get(courseId);
-  return !!course && course.created_by === user.id;
+  if (user.role === 'admin') return true;
+  return user.role === 'academic_mentor' && courseBelongsToMentor(user.id, courseId);
 }
 
 // 课程列表
@@ -42,15 +42,13 @@ exports.list = (req, res) => {
       )`;
       params.push(req.user.id);
     } else if (req.user.role === 'teacher') {
-      sql += ` AND c.status = 'published' AND EXISTS (
-        SELECT 1
-        FROM enrollments e
-        JOIN users s ON s.id = e.student_id
-        WHERE e.course_id = c.id
-          AND e.status = 'active'
-          AND s.school_id = ?
-      )`;
-      params.push(req.user.school_id || 0);
+      // 教师退出课程执行链路，只通过 observer 模块查看负责学生的学习结果。
+      sql += ' AND 1 = 0';
+    } else if (req.user.role === 'academic_mentor') {
+      sql += ` AND (c.created_by = ? OR EXISTS (
+        SELECT 1 FROM lessons l WHERE l.course_id = c.id AND l.instructor_id = ?
+      ))`;
+      params.push(req.user.id, req.user.id);
     } else if (!COURSE_MANAGER_ROLES.includes(req.user.role)) {
       sql += " AND c.status = 'published'";
     }
@@ -131,12 +129,14 @@ exports.detail = (req, res) => {
       }
     }
 
-    const teacherCourse = req.user.role === 'teacher' && course.status === 'published' && !!db.prepare(
-      `SELECT 1 FROM enrollments e
-       JOIN users s ON s.id = e.student_id
-       WHERE e.course_id = ? AND e.status = 'active' AND s.school_id = ? LIMIT 1`
-    ).get(id, req.user.school_id || 0);
-    if (!COURSE_MANAGER_ROLES.includes(req.user.role) && !teacherCourse &&
+    if (req.user.role === 'teacher') {
+      return res.status(404).json({ error: '课程不存在' });
+    }
+
+    if (req.user.role === 'academic_mentor' && !canManageCourse(req.user, id)) {
+      return res.status(403).json({ error: '无权查看该课程' });
+    }
+    if (!COURSE_MANAGER_ROLES.includes(req.user.role) &&
         !(req.user.role === 'student' && course.status === 'published')) {
       return res.status(400).json({ error: '课程不存在' });
     }
@@ -157,9 +157,8 @@ exports.detail = (req, res) => {
           WHERE l.course_id = ?`).get(req.user.id, id).progress
       : 0;
     const resources = db.prepare('SELECT * FROM resources WHERE course_id = ? ORDER BY created_at DESC').all(id).map(toFileDto);
-    const isInstructorTeacher = teacherCourse;
     const enrollments = (() => {
-      if (COURSE_MANAGER_ROLES.includes(req.user.role) || isInstructorTeacher) {
+      if (COURSE_MANAGER_ROLES.includes(req.user.role)) {
         return db.prepare(
           `SELECT e.*, u.real_name as student_name, u.username, s.name as school_name, c2.name as class_name,
                   u2.real_name AS enrolled_by_name
@@ -431,18 +430,15 @@ exports.downloadResource = (req, res) => {
       WHERE r.id = ?
     `).get(req.params.resource_id);
     if (!resource || !resource.file_path) return res.status(404).json({ error: '附件不存在' });
+    if (req.user.role === 'academic_mentor' && !canManageCourse(req.user, resource.course_id)) {
+      return res.status(404).json({ error: '附件不存在' });
+    }
     if (!COURSE_MANAGER_ROLES.includes(req.user.role)) {
-      // 教师可下载已发布课程的课堂资料（线下备课需要）；学生须已报名；其余角色不可下载
-      const isTeacher = req.user.role === 'teacher';
-      const teacherRelated = isTeacher && !!db.prepare(
-        `SELECT 1 FROM enrollments e
-         JOIN users s ON s.id = e.student_id
-         WHERE e.course_id = ? AND e.status = 'active' AND s.school_id = ? LIMIT 1`
-      ).get(resource.course_id, req.user.school_id || 0);
+      // 学生须已报名已发布课程；教师不再直接访问课程资料。
       const enrolled = req.user.role === 'student' && db.prepare(
         "SELECT id FROM enrollments WHERE student_id = ? AND course_id = ? AND status = 'active'"
       ).get(req.user.id, resource.course_id);
-      if (resource.course_status !== 'published' || (!teacherRelated && !enrolled)) {
+      if (resource.course_status !== 'published' || !enrolled) {
         return res.status(404).json({ error: '附件不存在' });
       }
     }
@@ -521,14 +517,8 @@ exports.updateProgress = (req, res) => {
 };
 
 function canAccessReplay(user, course) {
-  if (COURSE_MANAGER_ROLES.includes(user.role)) return true;
-  if (user.role === 'teacher') {
-    return course.status === 'published' && !!db.prepare(
-      `SELECT 1 FROM enrollments e
-       JOIN users s ON s.id = e.student_id
-       WHERE e.course_id = ? AND e.status = 'active' AND s.school_id = ? LIMIT 1`
-    ).get(course.id, user.school_id || 0);
-  }
+  if (user.role === 'admin') return true;
+  if (user.role === 'academic_mentor') return courseBelongsToMentor(user.id, course.id);
   if (user.role !== 'student') return false;
   if (course.status !== 'published') return false;
   return !!db.prepare('SELECT id FROM enrollments WHERE student_id = ? AND course_id = ? AND status = ?').get(user.id, course.id, 'active');
@@ -692,7 +682,7 @@ function canEnrollCourse(user, courseId) {
   return COURSE_MANAGER_ROLES.includes(user.role) && canManageCourse(user, courseId);
 }
 
-// 学生由执行导师/教师/管理员统一导入（一经选课不可退课；学生不自助选课）
+// 学生由执行导师/管理员统一导入（一经选课不可退课；学生不自助选课）
 exports.enroll = (req, res) => {
   try {
     const { id } = req.params;

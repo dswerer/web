@@ -4,22 +4,19 @@ const { courseBelongsToMentor } = require('./courseScope');
 
 function belongsToTeacher(user, work) {
   if (user.role !== 'teacher') return false;
-  if (work.student_teacher_id) return work.student_teacher_id === user.id;
-  // 历史学生尚未分配负责教师时，兼容其本校教师；显式分配后只认负责教师。
-  return !!user.school_id && work.student_school_id === user.school_id;
+  return work.student_teacher_id === user.id;
 }
 
-// 评审：admin 全部；导师仅自己课程（含授课归属）；教师仅负责学生的关联报名作品
+// 评审：admin 全部；执行导师仅自己课程（含授课归属）；教师永远不可评审
 function canReviewWork(user, work) {
   if (user.role === 'admin') return true;
   // 遗留无报名关联的作品（enrollment_id/course_id 缺失）按决策 D-2：仅管理员可见
   if (!work.enrollment_id || !work.course_id) return false;
-  if (user.role === 'teacher') return belongsToTeacher(user, work);
   if (user.role !== 'academic_mentor') return false;
   return courseBelongsToMentor(user.id, work.course_id);
 }
 
-// 查看：admin 全部；导师=可评审范围；学生=本人；教师=负责学生的全部已关联报名作品
+// 查看：admin 全部；导师=可评审范围；学生=本人；教师=明确分配学生的已关联报名作品
 function canViewWork(user, work) {
   if (user.role === 'admin') return true;
   if (user.role === 'academic_mentor') return canReviewWork(user, work);

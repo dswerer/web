@@ -101,8 +101,8 @@ exports.list = (req, res) => {
     const params = [];
 
     if (isTeacher(req.user.role)) {
-      sql += ' AND u.school_id = ?';
-      params.push(req.user.school_id || 0);
+      sql += ' AND u.teacher_id = ?';
+      params.push(req.user.id);
     } else if (req.user.role === 'academic_mentor') {
       // 导师仅见历史/当前参加过自己课程的学生（决策 D-1，与详情/档案树一致，红线 1）
       sql += ` AND EXISTS (
@@ -753,6 +753,9 @@ exports.detail = (req, res) => {
         return res.status(403).json({ error: '学生不存在或无权访问' });
       }
     } else {
+      if (viewer.role === 'teacher') {
+        return res.status(403).json({ error: '教师只能查看明确分配给自己的学生' });
+      }
       // 非学生目标（教师/执行导师/管理员）：仅教职工可查看
       if (!isStaff(viewer.role)) {
         return res.status(400).json({ error: '无权查看该用户' });
