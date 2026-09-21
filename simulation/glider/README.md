@@ -30,7 +30,7 @@ python sim_service.py --dihedral 6 --cg 0.1 --speed 36 --video --video-fps 10 --
 ```
 
 输出到 `--outdir`：
-- `trajectory3d.png` —— 世界系 3D 航迹
+- `trajectory3d.png` —— 世界系 3D 航迹（竖直轴 = 高度、地面在下方；长航程时竖直方向按显示比例拉伸并在图内注明）
 - `flight_telemetry.png` —— 高度 / 空速 / 迎角 / 下沉率 / L/D 随时间变化
 - `flight_telemetry.csv` —— 全量遥测
 - `summary.json` —— 参数与结果摘要（reason / glide_time / distance 等）
