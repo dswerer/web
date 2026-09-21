@@ -9,7 +9,9 @@ const { toFileDto } = require('../helpers/fileDto');
 const { removeFilesAfterCommit } = require('../helpers/fileLifecycle');
 const notificationService = require('../services/notificationService');
 const { NOTIFICATION_EVENTS } = require('../constants/notification');
+const coursePolicy = require('../policies/coursePolicy');
 const { courseBelongsToMentor } = require('../helpers/courseScope');
+const learningGate = require('../helpers/learningGate');
 
 function removeUploadedFile(file) {
   if (file?.path) {
@@ -18,9 +20,17 @@ function removeUploadedFile(file) {
 }
 
 function canManageCourse(user, courseId) {
-  if (user.role === 'admin') return true;
-  return user.role === 'academic_mentor' && courseBelongsToMentor(user.id, courseId);
+  const course = db.prepare('SELECT id, created_by FROM courses WHERE id = ?').get(courseId);
+  return coursePolicy.canManageCourse(user, course);
 }
+
+// 上传前鉴权，避免无权限请求先写入资源或视频文件。
+exports.requireCourseManagement = (req, res, next) => {
+  try {
+    if (!canManageCourse(req.user, req.params.id)) return res.status(403).json({ error: '无权管理该课程' });
+    next();
+  } catch (err) { next(err); }
+};
 
 // 课程列表
 exports.list = (req, res) => {
@@ -65,8 +75,13 @@ exports.list = (req, res) => {
 
     sql += ' ORDER BY c.updated_at DESC';
 
-    const courses = db.prepare(sql).all(...params).map((course) => ({ ...course, progress: 0 }));
-    const themes = db.prepare('SELECT DISTINCT theme FROM courses WHERE theme IS NOT NULL').all();
+    const courses = db.prepare(sql).all(...params).map((course) => req.user.role === 'media'
+      ? { id: course.id, title: course.title, theme: course.theme, grade_level: course.grade_level,
+          difficulty: course.difficulty, status: course.status, can_manage: false }
+      : { ...course, progress: 0, can_manage: coursePolicy.canManageCourse(req.user, course) });
+    const themes = req.user.role === 'admin'
+      ? db.prepare('SELECT DISTINCT theme FROM courses WHERE theme IS NOT NULL').all()
+      : [...new Set(courses.map((course) => course.theme).filter(Boolean))].map((theme) => ({ theme }));
 
     res.json({ title: '课程管理', courses, themes, filters: req.query });
   } catch (err) {
@@ -189,7 +204,8 @@ exports.detail = (req, res) => {
       ? db.prepare("SELECT id, real_name, role, school_id FROM users WHERE role = 'academic_mentor' AND is_active = 1 ORDER BY real_name").all()
       : [];
 
-    res.json({ title: course.title, course, lessons, tasks, progress, resources, enrollments, teachers });
+    res.json({ title: course.title, course: { ...course, can_manage: coursePolicy.canManageCourse(req.user, course),
+      can_enroll: course.status !== 'archived' && canEnrollCourse(req.user, course.id) }, lessons, tasks, progress, resources, enrollments, teachers });
   } catch (err) {
     console.error('课程详情错误:', err);
     res.status(500).json({ error: '操作失败，请稍后重试' });
@@ -204,7 +220,7 @@ exports.showEdit = (req, res) => {
       return res.status(400).json({ error: '课程不存在' });
     }
     if (!canManageCourse(req.user, course.id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     res.json({ title: '编辑课程', course, errors: [] });
   } catch (err) {
@@ -218,7 +234,7 @@ exports.update = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const fields = ['title','theme','description','driving_question','story_line',
                     'grade_level','difficulty','total_hours','materials_needed','status'];
@@ -251,7 +267,7 @@ exports.delete = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const course = db.prepare('SELECT id, title, status FROM courses WHERE id = ?').get(id);
     if (!course) {
@@ -290,7 +306,7 @@ exports.addLesson = (req, res) => {
   try {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     const { title, description, duration, start_at, end_at, location, instructor_id } = req.body;
 
@@ -380,7 +396,7 @@ exports.uploadResource = (req, res) => {
     const { id } = req.params;
     if (!canManageCourse(req.user, id)) {
       removeUploadedFile(req.file);
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
     if (!req.file) {
       return res.status(400).json({ error: '请选择要上传的文件' });
@@ -470,7 +486,7 @@ exports.addTask = (req, res) => {
       return res.status(400).json({ error: '课时不存在' });
     }
     if (!canManageCourse(req.user, lesson.course_id)) {
-      return res.status(400).json({ error: '无权管理该课程' });
+      return res.status(403).json({ error: '无权管理该课程' });
     }
 
     const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM tasks WHERE lesson_id = ?').get(lesson_id);
@@ -494,8 +510,8 @@ exports.addTask = (req, res) => {
 exports.updateProgress = (req, res) => {
   try {
     const lessonId = Number(req.body.lesson_id);
-    const progress = Math.max(0, Math.min(100, Number(req.body.progress) || 0));
-    const position = Math.max(0, Number(req.body.last_position) || 0);
+    const requestedPosition = Number(req.body.last_position);
+    const position = Number.isFinite(requestedPosition) ? Math.max(0, requestedPosition) : 0;
     const enrollment = db.prepare(`
       SELECT c.id FROM courses c
       JOIN enrollments e ON e.course_id = c.id AND e.student_id = ? AND e.status = 'active'
@@ -504,12 +520,13 @@ exports.updateProgress = (req, res) => {
     if (!enrollment) return res.status(403).json({ error: '请先选课后再学习' });
     const lesson = db.prepare('SELECT id FROM lessons WHERE id = ? AND course_id = ?').get(lessonId, req.params.id);
     if (!lesson) return res.status(400).json({ error: '课时不属于当前课程' });
-    db.prepare(`INSERT INTO lesson_progress (student_id, lesson_id, progress, last_position, completed_at)
-      VALUES (?, ?, ?, ?, CASE WHEN ? = 100 THEN CURRENT_TIMESTAMP ELSE NULL END)
-      ON CONFLICT(student_id, lesson_id) DO UPDATE SET progress=excluded.progress,
-      last_position=excluded.last_position, completed_at=excluded.completed_at, updated_at=CURRENT_TIMESTAMP`)
-      .run(req.user.id, lessonId, progress, position, progress);
-    res.json({ message: '学习进度已保存', progress });
+    const state = db.transaction(() => {
+      const calculated = learningGate.recalculateLessonProgress(req.user.id, lessonId);
+      db.prepare('UPDATE lesson_progress SET last_position = ? WHERE student_id = ? AND lesson_id = ?')
+        .run(position, req.user.id, lessonId);
+      return calculated;
+    })();
+    res.json({ message: '学习进度已保存', progress: state.percent });
   } catch (err) {
     console.error('保存学习进度错误:', err);
     res.status(500).json({ error: '保存学习进度失败' });

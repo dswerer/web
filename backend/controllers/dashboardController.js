@@ -59,13 +59,28 @@ exports.index = (req, res) => {
   let viewData = { title: '工作台', prompt, today, user };
 
   try {
-    // 平台统计仅管理员/学术导师可见（学生/教师/新媒体首页展示个人相关数据）
-    if (['admin', 'academic_mentor'].includes(user.role)) {
+    // 管理员看全平台；执行导师只统计自己创建或授课的课程及其学生、作品。
+    if (user.role === 'admin') {
       viewData.stats = {
         schoolCount: db.prepare('SELECT COUNT(*) AS c FROM schools').get().c,
         userCount: db.prepare('SELECT COUNT(*) AS c FROM users').get().c,
         courseCount: db.prepare('SELECT COUNT(*) AS c FROM courses').get().c,
         workCount: db.prepare('SELECT COUNT(DISTINCT COALESCE(parent_work_id, id)) AS c FROM works').get().c,
+      };
+    } else if (user.role === 'academic_mentor') {
+      const scope = `c.created_by = ? OR EXISTS (
+        SELECT 1 FROM lessons scope_l WHERE scope_l.course_id = c.id AND scope_l.instructor_id = ?
+      )`;
+      viewData.stats = {
+        schoolCount: db.prepare(`SELECT COUNT(DISTINCT u.school_id) AS c FROM users u
+          JOIN enrollments e ON e.student_id = u.id JOIN courses c ON c.id = e.course_id
+          WHERE (${scope})`).get(user.id, user.id).c,
+        userCount: db.prepare(`SELECT COUNT(DISTINCT e.student_id) AS c FROM enrollments e
+          JOIN courses c ON c.id = e.course_id WHERE ${scope}`).get(user.id, user.id).c,
+        courseCount: db.prepare(`SELECT COUNT(*) AS c FROM courses c WHERE ${scope}`).get(user.id, user.id).c,
+        workCount: db.prepare(`SELECT COUNT(DISTINCT COALESCE(w.parent_work_id, w.id)) AS c FROM works w
+          JOIN enrollments e ON e.id = w.enrollment_id JOIN courses c ON c.id = e.course_id
+          WHERE ${scope}`).get(user.id, user.id).c,
       };
     }
 

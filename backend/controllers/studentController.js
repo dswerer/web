@@ -3,7 +3,7 @@ const db = require('../config/database');
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { isStaff, isTeacher } = require('../middleware/auth');
+const { isTeacher } = require('../middleware/auth');
 const { buildUserTree } = require('../helpers/userTree');
 const { sanitizeUser } = require('../helpers/userDto');
 const { removeFilesAfterCommit, removeDirectoriesAfterCommit } = require('../helpers/fileLifecycle');
@@ -13,6 +13,7 @@ const { loadStudentArchive } = require('./archiveController');
 const { generateTemporaryPassword } = require('../services/tempPasswordService');
 const orgService = require('../services/organizationService');
 const lifecycle = require('../services/studentLifecycleService');
+const { mentorStudentScope, mentorStudentParams, canViewStudent } = require('../policies/studentPolicy');
 
 exports.changeStatus = (req, res) => {
   try {
@@ -103,19 +104,13 @@ exports.list = (req, res) => {
     if (isTeacher(req.user.role)) {
       sql += ' AND u.teacher_id = ?';
       params.push(req.user.id);
-    } else if (req.user.role === 'academic_mentor') {
-      // 导师仅见历史/当前参加过自己课程的学生（决策 D-1，与详情/档案树一致，红线 1）
-      sql += ` AND EXISTS (
-        SELECT 1 FROM enrollments e JOIN courses c2 ON c2.id = e.course_id
-        WHERE e.student_id = u.id
-          AND (c2.created_by = ? OR EXISTS (
-            SELECT 1 FROM lessons l WHERE l.course_id = c2.id AND l.instructor_id = ?
-          ))
-      )`;
-      params.push(req.user.id, req.user.id);
     }
 
     if (req.query.school_id) { sql += ' AND u.school_id = ?'; params.push(req.query.school_id); }
+    if (req.user.role === 'academic_mentor') {
+      sql += ` AND ${mentorStudentScope()}`;
+      params.push(...mentorStudentParams(req.user.id));
+    }
     if (req.query.class_id) { sql += ' AND u.class_id = ?'; params.push(req.query.class_id); }
     if (req.query.search) {
       sql += ' AND (u.real_name LIKE ? OR u.username LIKE ?)';
@@ -126,8 +121,13 @@ exports.list = (req, res) => {
 
     const students = db.prepare(sql).all(...params);
     const schools = isTeacher(req.user.role)
-      ? db.prepare('SELECT id, name FROM schools WHERE id = ? ORDER BY name').all(req.user.school_id || 0)
-      : db.prepare('SELECT id, name FROM schools ORDER BY name').all();
+      ? db.prepare(`SELECT DISTINCT s.id, s.name FROM schools s
+          JOIN users u ON u.school_id = s.id
+          WHERE u.role = 'student' AND u.teacher_id = ? ORDER BY s.name`).all(req.user.id)
+      : db.prepare(`SELECT DISTINCT s.id, s.name FROM schools s
+          JOIN users u ON u.school_id = s.id
+          WHERE u.role = 'student' AND ${mentorStudentScope()} ORDER BY s.name`)
+        .all(...mentorStudentParams(req.user.id));
 
     res.json({ title: '学生管理', students, schools, filters: req.query });
   } catch (err) {
@@ -748,20 +748,17 @@ exports.detail = (req, res) => {
     }
 
     if (target.role === 'student') {
+      if (viewer.role === 'academic_mentor' && !canViewStudent(viewer, target)) {
+        return res.status(403).json({ error: '只能查看自己课程相关学生' });
+      }
       // 学生目标：档案访问范围统一由 archivePolicy 判定（决策 D-1）
       if (!canViewArchive(viewer, target)) {
         return res.status(403).json({ error: '学生不存在或无权访问' });
       }
     } else {
-      if (viewer.role === 'teacher') {
-        return res.status(403).json({ error: '教师只能查看明确分配给自己的学生' });
-      }
-      // 非学生目标（教师/执行导师/管理员）：仅教职工可查看
-      if (!isStaff(viewer.role)) {
-        return res.status(400).json({ error: '无权查看该用户' });
-      }
-      if (isTeacher(viewer.role) && target.role !== 'academic_mentor' && target.school_id !== viewer.school_id) {
-        return res.status(400).json({ error: '无权查看其他学校用户' });
+      // 账号管理与其他教职工资料仅管理员可查看；导师/教师只读授权学生。
+      if (viewer.role !== 'admin') {
+        return res.status(403).json({ error: '无权查看该用户' });
       }
     }
 
@@ -781,8 +778,11 @@ exports.detail = (req, res) => {
         `).all(target.id);
       } else if (target.role === 'academic_mentor') {
         managedCourses = db.prepare(
-          'SELECT id, title, status FROM courses WHERE created_by = ? ORDER BY updated_at DESC'
-        ).all(target.id);
+          `SELECT c.id, c.title, c.status FROM courses c
+           WHERE c.created_by = ? OR EXISTS (
+             SELECT 1 FROM lessons l WHERE l.course_id = c.id AND l.instructor_id = ?
+           ) ORDER BY c.updated_at DESC`
+        ).all(target.id, target.id);
       }
       return res.json({
         title: `${safeTarget.real_name} - 用户详情`,

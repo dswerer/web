@@ -1,14 +1,10 @@
 const db = require('../config/database');
-const { COURSE_MANAGER_ROLES } = require('../middleware/auth');
+const { courseBelongsToMentor } = require('../helpers/courseScope');
 
 // 获取 AI 助教可用的课程列表
 exports.getCourses = (req, res) => {
   try {
     const user = req.user;
-    // 教师端灵境小智已下线（教师不参与课程建设，无课程上下文）
-    if (user.role === 'teacher') {
-      return res.status(403).json({ error: '灵境小智暂不对教师开放' });
-    }
     let courses = [];
 
     if (user.role === 'student') {
@@ -17,11 +13,17 @@ exports.getCourses = (req, res) => {
         FROM enrollments e JOIN courses c ON e.course_id = c.id
         WHERE e.student_id = ? AND e.status = 'active' AND c.status = 'published'
       `).all(user.id);
-    } else if (['academic_mentor', 'teacher', 'admin'].includes(user.role)) {
+    } else if (user.role === 'academic_mentor') {
       courses = db.prepare(`
-        SELECT id, title, description, driving_question, grade_level, difficulty
-        FROM courses WHERE created_by = ? AND status != 'archived'
-      `).all(user.id);
+        SELECT c.id, c.title, c.description, c.driving_question, c.grade_level, c.difficulty
+        FROM courses c WHERE c.created_by = ? OR EXISTS (
+          SELECT 1 FROM lessons l WHERE l.course_id = c.id AND l.instructor_id = ?
+        )
+      `).all(user.id, user.id);
+    } else if (user.role === 'admin') {
+      courses = db.prepare(`
+        SELECT id, title, description, driving_question, grade_level, difficulty FROM courses
+      `).all();
     }
 
     res.json({ title: '灵境小智', courses });
@@ -34,10 +36,6 @@ exports.getCourses = (req, res) => {
 // AI 回答（基于课程知识库的规则匹配 + 通用回复）
 exports.ask = (req, res) => {
   try {
-    // 教师端灵境小智已下线
-    if (req.user.role === 'teacher') {
-      return res.status(403).json({ error: '灵境小智暂不对教师开放' });
-    }
     const { question, course_id } = req.body;
 
     if (!question || question.trim().length === 0) {
@@ -57,12 +55,17 @@ exports.ask = (req, res) => {
           JOIN enrollments e ON e.course_id = c.id
           WHERE c.id = ? AND e.student_id = ? AND e.status = 'active' AND c.status = 'published'
         `).get(course_id, user.id);
-      } else if (COURSE_MANAGER_ROLES.includes(user.role) || user.role === 'teacher') {
+      } else if (user.role === 'admin') {
         course = db.prepare(`
           SELECT title, description, driving_question, story_line
           FROM courses
-          WHERE id = ? AND created_by = ?
-        `).get(course_id, user.id);
+          WHERE id = ?
+        `).get(course_id);
+      } else if (user.role === 'academic_mentor' && courseBelongsToMentor(user.id, course_id)) {
+        course = db.prepare(`
+          SELECT title, description, driving_question, story_line
+          FROM courses WHERE id = ?
+        `).get(course_id);
       }
 
       if (course) {

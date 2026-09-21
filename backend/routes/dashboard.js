@@ -19,7 +19,7 @@ router.post('/schools/:id/classes', requireRole('admin'), controller.addClass);
 router.post('/schools/:id/classes/:classId/delete', requireRole('admin'), controller.deleteClass);
 
 // AI 助教
-router.get('/ai/courses', aiController.getCourses);
-router.post('/ai/ask', aiController.ask);
+router.get('/ai/courses', requireRole('admin', 'academic_mentor', 'student'), aiController.getCourses);
+router.post('/ai/ask', requireRole('admin', 'academic_mentor', 'student'), aiController.ask);
 
 module.exports = router;

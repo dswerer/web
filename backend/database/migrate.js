@@ -13,6 +13,21 @@ function runMigrations(db) {
     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );`);
 
+  // 旧版将学生状态迁移记为 003；合并后的 003 改为档案时间轴，
+  // 原学生状态 SQL 移到 008。先核实旧结构，再只调整版本记录，
+  // 让新的 003 正常补 work_id，避免重复添加 archived_at。
+  const legacy = db.prepare('SELECT name FROM schema_migrations WHERE version = 3').get();
+  if (legacy?.name === '003_student_lifecycle.sql') {
+    const users = new Set(db.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+    const events = new Set(db.prepare('PRAGMA table_info(student_status_events)').all().map((column) => column.name));
+    const hasVersion8 = db.prepare('SELECT 1 FROM schema_migrations WHERE version = 8').get();
+    if (hasVersion8 || !['archived_at', 'auth_version'].every((column) => users.has(column)) ||
+        !['student_id', 'actor_id', 'action', 'reason'].every((column) => events.has(column))) {
+      throw new Error('旧版学生状态迁移记录与实际结构不一致，请先核对数据库备份和 schema_migrations');
+    }
+    db.prepare("UPDATE schema_migrations SET version = 8, name = '008_student_lifecycle.sql' WHERE version = 3").run();
+  }
+
   const dir = path.join(__dirname, 'migrations');
   const files = fs.readdirSync(dir)
     .filter((f) => /^\d+_.*\.sql$/.test(f))

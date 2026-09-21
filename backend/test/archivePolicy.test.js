@@ -1,6 +1,6 @@
 // 批次D：档案权限与评价收敛回归测试
 // 覆盖：导师学生列表/档案树/详情三入口一致、导师档案课程过滤、遗留NULL数据可见性、
-//       教师仅看明确分配学生、教师禁止写成长记录、评价权限与课程绑定
+//       教师仅明确分配学生且只读、评价权限与课程绑定
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -41,6 +41,7 @@ before(async () => {
   insertUser.run(5, 'student_b', pwd, '学生B', 'student', 2, 2);
   insertUser.run(6, 'mentor_a', pwd, '导师A', 'academic_mentor', null, null);
   insertUser.run(7, 'mentor_b', pwd, '导师B', 'academic_mentor', null, null);
+  insertUser.run(8, 'student_unassigned', pwd, '同校未分配学生', 'student', 1, 1);
   db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(2, 4);
   db.prepare('UPDATE users SET teacher_id = ? WHERE id = ?').run(3, 5);
 
@@ -69,6 +70,10 @@ before(async () => {
   insertWork.run(2, 4, 1, '学生A待审作品', '/tmp/pbl-aw2.pdf', 'pending');
   insertWork.run(3, 4, null, '遗留无课程作品', '/tmp/pbl-aw3.pdf', 'approved');
   insertWork.run(4, 5, 2, '学生B公开作品', '/tmp/pbl-aw4.pdf', 'approved');
+  db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (1, 4, 'system', '课程1作品', 1)").run();
+  db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (2, 4, 'system', '遗留作品', 3)").run();
+  db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, recorded_by) VALUES (3, 4, 'teacher', '授课导师记录', 7)").run();
+  db.prepare("INSERT INTO growth_records (id, student_id, event_type, description, work_id) VALUES (4, 4, 'system', '待审作品', 2)").run();
 
   db.prepare("INSERT INTO evaluations (id, evaluator_id, student_id, enrollment_id, eval_type, score) VALUES (1, 6, 4, 1, 'process', 80)").run();
   db.prepare("INSERT INTO evaluations (id, evaluator_id, student_id, enrollment_id, eval_type, score) VALUES (2, 6, 4, NULL, 'process', 70)").run();
@@ -136,9 +141,12 @@ test('导师学生列表与档案树、详情三入口一致', async () => {
 
   const tokenB = await tokenFor('导师B');
   const listB = await (await authed(tokenB, 'GET', '/api/students', null)).json();
-  assert.deepEqual(listB.students.map((s) => s.id), [4], '导师B仅见授课课程的学生');
+  assert.deepEqual(listB.students.map((s) => s.id), [4], '受邀授课导师可浏览该课程学生');
 
-  assert.equal((await authed(tokenB, 'GET', '/api/students/4', null)).status, 200, '导师B可打开授课课程学生详情');
+  assert.equal((await authed(tokenB, 'GET', '/api/students/4', null)).status, 200, '受邀授课课程学生详情可见');
+  const archiveB = await (await authed(tokenB, 'GET', '/api/archives/generate?student_id=4', null)).json();
+  assert.deepEqual(archiveB.courses.map((course) => course.enrollment_id), [3], '受邀授课导师只见其课程');
+  assert.deepEqual(archiveB.growthRecords.map((record) => record.id), [3], '其他课程或遗留作品轨迹不可见');
   assert.equal((await authed(tokenB, 'GET', '/api/students/5', null)).status, 403, '非自己课程学生详情应403');
 });
 
@@ -148,17 +156,22 @@ test('导师档案仅含自己课程的作品/评价/反思，遗留NULL数据�
   assert.deepEqual(archive.works.map((w) => w.id), [1, 2], '仅课程1的作品，不含遗留NULL作品');
   assert.deepEqual(archive.evaluations.map((e) => e.id), [1], '遗留NULL评价不可见');
   assert.deepEqual(archive.reflections.map((r) => r.id), [1], '遗留NULL反思不可见');
-  assert.ok(archive.courses.every((c) => c.enrollment_id), '课程列表应携带enrollment_id');
+  assert.deepEqual(archive.courses.map((c) => c.enrollment_id), [1], '课程列表仅含导师负责课程');
+  assert.deepEqual(archive.growthRecords.map((record) => record.id).sort(), [1, 4], '时间轴仅含可见课程作品');
 
   const admin = await tokenFor('管理员');
   const adminArchive = await (await authed(admin, 'GET', '/api/archives/generate?student_id=4', null)).json();
   assert.deepEqual(adminArchive.works.map((w) => w.id).sort((a, b) => a - b), [1, 2, 3], '管理员可见全部作品');
+  assert.deepEqual(adminArchive.growthRecords.map((record) => record.id).sort((a, b) => a - b), [1, 2, 3, 4]);
 });
 
 test('教师档案仅含明确分配学生的公开作品', async () => {
   const tokenA = await tokenFor('甲老师');
   const archive = await (await authed(tokenA, 'GET', '/api/archives/generate?student_id=4', null)).json();
   assert.deepEqual(archive.works.map((w) => w.id), [1], '仅approved作品');
+  assert.deepEqual(archive.growthRecords.filter((r) => r.work_id).map((r) => r.work_id), [1], '时间轴不泄漏待审作品');
+  assert.equal((await authed(tokenA, 'GET', '/api/students/8', null)).status, 403, '同校未分配学生不可见');
+  assert.equal((await authed(tokenA, 'GET', '/api/archives/generate?student_id=8', null)).status, 403, '同校未分配学生档案不可见');
 
   const tokenB = await tokenFor('乙老师');
   const archiveB = await (await authed(tokenB, 'GET', '/api/archives/generate?student_id=5', null)).json();
@@ -166,10 +179,11 @@ test('教师档案仅含明确分配学生的公开作品', async () => {
   assert.equal((await authed(tokenB, 'GET', '/api/archives/generate?student_id=4', null)).status, 403, '跨校学生403');
 });
 
-test('成长记录：教师禁止写入，导师/管理员可写', async () => {
+test('成长记录：教师只读，导师限相关学生，管理员可写', async () => {
   assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 5, description: '外校记录' })).status, 403);
-  assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 4, description: '本校观察' })).status, 403);
-  assert.equal((await authed(await tokenFor('导师B'), 'POST', '/api/archives/growth-records', { student_id: 5, description: '导师观察' })).status, 200);
+  assert.equal((await authed(await tokenFor('甲老师'), 'POST', '/api/archives/growth-records', { student_id: 4, description: '已分配学生观察' })).status, 403);
+  assert.equal((await authed(await tokenFor('导师B'), 'POST', '/api/archives/growth-records', { student_id: 5, description: '无关导师观察' })).status, 403);
+  assert.equal((await authed(await tokenFor('导师B'), 'POST', '/api/archives/growth-records', { student_id: 4, description: '授课导师观察' })).status, 200);
 });
 
 test('课程评价：教师403、必须课程、导师限自己课程、类型收敛', async () => {

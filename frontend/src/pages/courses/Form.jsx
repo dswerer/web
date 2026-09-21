@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Form, Input, Select, Button, Typography, message, Space } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { courseAPI } from '../../api';
+import { useAuth } from '../../store/AuthContext';
 
 const { Title } = Typography;
 
@@ -12,14 +13,33 @@ export default function CourseForm() {
   const navigate = useNavigate();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const { user } = useAuth();
+  const [editableId, setEditableId] = useState(null);
+  const [loadedCourse, setLoadedCourse] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     if (isEdit) {
-      courseAPI.detail(id).then((res) => form.setFieldsValue(res.course)).catch(() => message.error('加载失败'));
+      courseAPI.detail(id).then((res) => {
+        if (cancelled) return;
+        if (!res.course.can_manage) {
+          message.warning('您只能编辑自己负责的课程');
+          navigate(`/courses/${id}`, { replace: true });
+          return;
+        }
+        setLoadedCourse(res.course);
+        setEditableId(id);
+      }).catch(() => message.error('加载失败'));
     }
-  }, [id, form, isEdit]);
+    return () => { cancelled = true; };
+  }, [id, form, isEdit, navigate]);
+
+  useEffect(() => {
+    if (isEdit && editableId === id && loadedCourse) form.setFieldsValue(loadedCourse);
+  }, [editableId, id, isEdit, loadedCourse, form]);
 
   const onFinish = async (values) => {
+    if (isEdit && editableId !== id) return;
     setLoading(true);
     try {
       if (isEdit) {
@@ -33,6 +53,9 @@ export default function CourseForm() {
     } catch { /* handled */ }
     finally { setLoading(false); }
   };
+
+  if (!['admin', 'academic_mentor'].includes(user?.role)) return <p>无权管理课程</p>;
+  if (isEdit && editableId !== id) return <p>正在检查课程编辑权限…</p>;
 
   return (
     <div style={{ maxWidth: 700 }}>

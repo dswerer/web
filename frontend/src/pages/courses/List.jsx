@@ -31,7 +31,7 @@ export default function CourseList() {
   useEffect(() => { loadCourses(); }, []);
 
   const columns = [
-    { title: '课程名称', dataIndex: 'title', key: 'title', render: (text, r) => <Link to={`/courses/${r.id}`}>{text}</Link> },
+    { title: '课程名称', dataIndex: 'title', key: 'title', render: (text, r) => user?.role === 'media' ? text : <Link to={`/courses/${r.id}`}>{text}</Link> },
     { title: '主题', dataIndex: 'theme', key: 'theme' },
     { title: '适用学段', dataIndex: 'grade_level', key: 'grade_level' },
     { title: '难度', dataIndex: 'difficulty', key: 'difficulty', render: (v) => <Tag>{v}</Tag> },
@@ -39,7 +39,7 @@ export default function CourseList() {
     ...(canViewOperationalStats(user?.role) ? [{ title: '学习进度', dataIndex: 'progress', key: 'progress', render: (v) => `${v || 0}%` }] : []),
     ...(canViewOperationalStats(user?.role) ? [{ title: '学生数', dataIndex: 'student_count', key: 'student_count' }, { title: '创建者', dataIndex: 'creator_name', key: 'creator_name' }] : []),
     ...(canManage(user?.role) ? [{
-      title: '操作', key: 'actions', render: (_, r) => (
+      title: '操作', key: 'actions', render: (_, r) => r.can_manage ? (
         <Space>
           <Button size="small" onClick={() => navigate(`/courses/${r.id}/edit`)}>编辑</Button>
           {r.status === 'draft' && (
@@ -56,7 +56,7 @@ export default function CourseList() {
             </Popconfirm>
           )}
         </Space>
-      )
+      ) : '只读'
     }] : []),
   ];
 
