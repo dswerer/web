@@ -21,3 +21,6 @@ build/
 simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/
 simulation/glider/output/
 simulation/glider/imgui.ini
+
+# 本地方案/规划文档：留在本地评审，不入库（docs/ 内既有已跟踪文件不受影响）
+docs/
