@@ -47,6 +47,10 @@ const GLIDER_TIMEOUT = Math.min(300, Math.max(20, Number.parseFloat(process.env.
 const GLIDER_VIDEO = String(process.env.GLIDER_VIDEO || '1') !== '0';
 const GLIDER_VIDEO_FPS = Math.min(30, Math.max(4, parseInt(process.env.GLIDER_VIDEO_FPS || '10', 10) || 10));
 const GLIDER_VIDEO_MAX = Math.min(600, Math.max(5, Number.parseFloat(process.env.GLIDER_VIDEO_MAX) || 300));
+// 回放渲染途径：mpl（matplotlib，默认，任何环境都能出片）/ gl（OpenGL GPU 渲染）。
+// 走 gl 时若建不出 GL 上下文（WSL/Docker 无 WSLg 或 EGL、无 GPU、缺依赖），
+// sim_service.py 会自动回退 matplotlib，产物仍为 flight_replay.mp4，故部署零风险。
+const GLIDER_RENDERER = (process.env.GLIDER_RENDERER || 'mpl').trim().toLowerCase();
 // 结果保留策略（决策 E-6）：默认 0 = 不自动清理；>0 表示 error 状态结果的可清理天数（供运维脚本使用）
 const GLIDER_RETENTION_DAYS = Math.max(0, parseInt(process.env.GLIDER_RETENTION_DAYS || '0', 10) || 0);
 
@@ -166,6 +170,7 @@ exports.simulate = async (req, res) => {
     if (GLIDER_VIDEO) {
       flags.push('--video', '--video-fps', String(GLIDER_VIDEO_FPS),
                  '--video-max', String(GLIDER_VIDEO_MAX));
+      if (GLIDER_RENDERER === 'gl') flags.push('--renderer', 'gl');
     }
 
     const markError = (msg) => {
