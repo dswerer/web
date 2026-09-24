@@ -50,7 +50,7 @@ def _detect_backend_name():
         return ""
 
 
-def _probe(probe_outdir):
+def _probe(probe_outdir, renderer=None):
     """输出引擎环境探测 JSON（不执行仿真）。"""
 
     def has(mod):
@@ -66,10 +66,12 @@ def _probe(probe_outdir):
         "backend": "",
         "numpy": has("numpy"),
         "matplotlib": has("matplotlib"),
+        "moderngl": has("moderngl"),
+        "trimesh": has("trimesh"),
+        "gl_context": False,
+        "renderer": "mpl",
         "ffmpeg": False,
         "novaphy": _novaphy_usable(),
-        "opengl": has("moderngl") and has("moderngl_window"),
-        "renderer": _default_renderer(),
         "outputWritable": False,
     }
     result["backend"] = "novaphy" if result["novaphy"] else ("reference" if result["numpy"] else "")
@@ -78,6 +80,10 @@ def _probe(probe_outdir):
         result["ffmpeg"] = hasattr(imageio_ffmpeg, "get_ffmpeg_exe")
     except Exception:  # noqa: BLE001
         result["ffmpeg"] = False
+    if result["moderngl"]:
+        result["gl_context"] = _gl_context_ok()
+    # 生效渲染器：arg > env GLIDER_RENDERER > 默认 mpl
+    result["renderer"] = renderer or os.environ.get("GLIDER_RENDERER", "mpl")
 
     outdir = os.path.abspath(probe_outdir or "output/_probe")
     try:
@@ -99,46 +105,15 @@ def _probe(probe_outdir):
     return 0
 
 
-def _default_renderer():
-    """默认渲染途径：环境变量 ``GLIDER_RENDERER``（mpl|gl），默认 matplotlib。"""
-    return (os.environ.get("GLIDER_RENDERER") or "mpl").strip().lower()
-
-
-def _parse_size(text, default=(1280, 720)):
-    """解析 ``WxH``（也接受 ``W,H``）；非法时回退默认值。H.264 要求偶数尺寸。"""
+def _gl_context_ok():
+    """probe 用：尝试创建 standalone GL 上下文（guarded，任何失败返回 False）。"""
     try:
-        w, h = (int(v) for v in str(text).lower().replace(",", "x").split("x"))
+        from gldeferred import create_context
+        handle = create_context(64, 64)
+        handle.close()
+        return True
     except Exception:  # noqa: BLE001
-        return default
-    if w < 16 or h < 16:
-        return default
-    return (w - w % 2, h - h % 2)
-
-
-def _gl_video(tele, glider, out_path, duration, fps, args):
-    """GL 渲染分支：失败时向上抛异常，由调用方回退 matplotlib。"""
-    from render_gl import make_video_gl
-
-    if args.gl_camera == "chase":
-        cfg_view = {"trail": 500, "ground": 300.0, "spacing": 30.0}
-    else:
-        cfg_view = {"trail": 5000, "spacing": 80.0}
-    if float(args.gl_scale) > 0:
-        cfg_view["scale"] = float(args.gl_scale)
-    # 竖直增强：让固定机位高度波动接近 matplotlib 的观感（--gl-vert 可调，设 1 关闭）
-    if float(args.gl_vert) > 0:
-        cfg_view["vert"] = float(args.gl_vert)
-
-    make_video_gl(
-        tele, glider, out_path, fps=fps, start=0.0, end=duration,
-        camera=args.gl_camera, cfg_view=cfg_view, hud=True,
-        size=_parse_size(args.gl_size), aa=max(1, int(args.gl_aa)),
-        model_path=args.model or None, model_scale=float(args.model_scale),
-        model_rot=tuple(float(v) for v in args.model_rot),
-        shader_dir=args.shader_dir or None,
-        preview_png=args.gl_preview or None, dump_uniforms=bool(args.dump_uniforms),
-        # --dump-uniforms 时顺带把"网格来源/上下文/uniform 快照"打到 stdout，便于自检
-        progress=print if args.dump_uniforms else (lambda *a, **k: None))
+        return False
 
 
 def _pick_backend(name):
@@ -178,6 +153,49 @@ def write_plots(tele, outdir, backend_name, params):
                             title=f"3D flight path  {tag}")
 
 
+def _parse_gl_rot(s):
+    """'yaw,pitch,roll'（度）-> GLConfig.model_rot = (roll, yaw, pitch)（绕机体 X/Y/Z）。"""
+    try:
+        yaw, pitch, roll = (float(v) for v in str(s).split(","))
+    except ValueError as exc:
+        raise SystemExit(f"--gl-model-rot 需为 'yaw,pitch,roll'（度），收到：{s!r}") from exc
+    return (roll, yaw, pitch)
+
+
+def _parse_gl_size(s):
+    """'WxH' -> (W, H)；None -> None（按相机取默认）。"""
+    if s is None:
+        return None
+    try:
+        w, h = str(s).lower().split("x")
+        size = (int(w), int(h))
+        if size[0] < 64 or size[1] < 64:
+            raise ValueError
+        return size
+    except ValueError as exc:
+        raise SystemExit(f"--gl-size 需为 'WxH'（>=64），收到：{s!r}") from exc
+
+
+def _gl_setup(args):
+    """把 CLI GL 参数组装成 (GLConfig, cfg_view)。延迟导入：mpl 路径不触碰 GL 依赖。"""
+    from gldeferred import GLConfig
+    cfg = GLConfig(
+        model=args.gl_model,
+        model_fwd=args.gl_model_fwd,
+        model_up=args.gl_model_up,
+        model_rot=_parse_gl_rot(args.gl_model_rot),
+        model_scale=float(args.gl_model_scale),
+        model_center=args.gl_model_center,
+        trail_state=args.gl_trail_state,
+        trail_width=float(args.gl_trail_width),
+        vert=None if args.gl_vert is None else float(args.gl_vert),
+        skybox=args.gl_skybox,
+    )
+    cfg_view = dict(trail_state=args.gl_trail_state,
+                    vert=None if args.gl_vert is None else float(args.gl_vert))
+    return cfg, cfg_view
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="PBL 滑翔机模拟服务（headless）")
     p.add_argument("--probe", action="store_true", help="输出引擎环境探测 JSON 后退出")
@@ -192,36 +210,63 @@ def main(argv=None):
                    help="默认关闭横滚/偏航自动保持：考察上反角与重心对被动稳定性的真实影响；"
                         "--autolevel 可开启让飞机更易保持平飞")
     p.add_argument("--backend", default="auto", choices=["auto", "novaphy", "reference"])
+    p.add_argument("--renderer", choices=["mpl", "gl"], default=None,
+                   help="回放渲染器：mpl（默认，matplotlib）或 gl（GLB + 延迟渲染）；"
+                        "优先级 arg > 环境变量 GLIDER_RENDERER > 默认 mpl；"
+                        "gl 不可用时自动回退 mpl")
     p.add_argument("--video", action="store_true", help="额外渲染 MP4 飞行回放（需 imageio-ffmpeg）")
     p.add_argument("--video-fps", type=int, default=12, help="回放帧率")
     p.add_argument("--video-max", type=float, default=60.0,
                    help="回放最长覆盖仿真秒数（实际取 min(整段时长, 该值))")
-    p.add_argument("--renderer", default=_default_renderer(), choices=["mpl", "gl"],
-                   help="回放渲染途径：mpl（matplotlib，默认）/ gl（OpenGL，不可用时自动回退 mpl）")
-    p.add_argument("--gl-size", default="1280x720", help="GL 渲染分辨率 WxH（H.264 要求偶数）")
-    p.add_argument("--gl-aa", type=int, default=1, help="GL 超采样倍数（抗锯齿，>1 更慢）")
-    p.add_argument("--gl-camera", default="fixed", choices=["fixed", "chase"],
-                   help="GL 机位：fixed 固定世界机位 / chase 追逐机位")
-    p.add_argument("--gl-scale", type=float, default=0.0,
-                   help="飞机显示放大倍数（0=按机位自动：fixed 6.0 / chase 1.0）")
-    p.add_argument("--gl-vert", type=float, default=3.0,
-                   help="固定机位竖直增强系数（放大高度波动以接近 matplotlib 观感；设 1 关闭等比例）")
-    p.add_argument("--model", default="",
-                   help="飞机 OBJ 模型路径；留空则自动用 assets/airplane.obj，缺失时用程序化网格")
-    p.add_argument("--model-rot", type=float, nargs=3, default=(0.0, 0.0, 0.0),
-                   metavar=("RX", "RY", "RZ"), help="模型朝向修正（度），模型不是 x 前/y 上/z 右时用")
-    p.add_argument("--model-scale", type=float, default=0.0,
-                   help="模型显式缩放；0=按最长轴自动归一化到机身长度")
-    p.add_argument("--shader-dir", default="",
-                   help="外部着色器目录（含 aircraft.vert/frag、line.vert/frag），用于热替换")
-    p.add_argument("--gl-preview", default="", help="额外输出 GL 首帧 PNG 路径（调试/比对用）")
-    p.add_argument("--dump-uniforms", action="store_true",
-                   help="把 GL 首帧的完整 uniform 快照打印为 JSON（自检契约）")
+    # ---- GL 渲染途径（仅 --renderer gl / --gl-* 调试模式时加载依赖）----
+    p.add_argument("--gl-model", default=None, metavar="PATH",
+                   help="GLB/OBJ 模型路径；缺省用 assets/airplane.glb（失败回退程序化盒体）")
+    p.add_argument("--gl-model-fwd", default="-x", choices=["+x", "-x", "+y", "-y", "+z", "-z"],
+                   help="模型机头轴（默认 -x，已按 airplane.glb 实测固化：垂尾在 +x 端）")
+    p.add_argument("--gl-model-up", default="+y", choices=["+x", "-x", "+y", "-y", "+z", "-z"],
+                   help="模型上轴（默认 +y）")
+    p.add_argument("--gl-model-rot", default="0,0,0", metavar="YAW,PITCH,ROLL",
+                   help="模型姿态微调（度，叠加在轴转换后）")
+    p.add_argument("--gl-model-scale", type=float, default=0.0, metavar="F|0",
+                   help="模型缩放；0=auto（最长包围盒边归一到机身长度）")
+    p.add_argument("--gl-model-center", default="bbox", choices=["bbox", "origin"],
+                   help="模型居中方式：bbox（减包围盒中心，默认）或 origin（保留原点）")
+    p.add_argument("--gl-camera", default=None, choices=["fixed", "chase", "chase2"],
+                   help="机位：fixed（走廊全景，默认）/ chase（后上方跟随）/ "
+                        "chase2（低空平视跟随，视线近水平平行于地面）")
+    p.add_argument("--gl-size", default=None, metavar="WxH",
+                   help="渲染分辨率；缺省 fixed=1280x720 / chase、chase2=1024x576")
+    p.add_argument("--gl-vert", type=float, default=None, metavar="K",
+                   help="场景竖直增强系数（fixed 默认 3.0，chase 1.0）；只影响视图，姿态保持物理")
+    p.add_argument("--gl-trail-state", default="alt", choices=["none", "alt"],
+                   help="拖尾着色：alt=高空暖橙到低空亮绿渐变（默认），none=恒定蓝")
+    p.add_argument("--gl-trail-width", type=float, default=4.0, metavar="PX",
+                   help="拖尾宽度（像素，默认 4；0=关闭拖尾）")
+    p.add_argument("--gl-skybox", action=argparse.BooleanOptionalAction, default=True,
+                   help="使用等距柱状环境贴图作为天空（默认开；--no-gl-skybox 关，退渐变天空）")
+    p.add_argument("--gl-hud", action=argparse.BooleanOptionalAction, default=True,
+                   help="回放叠加飞行数据 HUD（默认开）")
+    p.add_argument("--gl-preview", type=float, nargs="?", const=0.0, default=None, metavar="T",
+                   help="仿真后输出单帧 PNG 预览（t=T 秒，缺省 0）到 outdir/gl_preview.png")
+    p.add_argument("--gl-pose-set", default=None, choices=["level", "pitch20", "bank30", "yaw90"],
+                   help="配合 --gl-preview：用规范静态姿态替代该时刻的真实姿态（姿态目检）")
+    p.add_argument("--gl-live", action="store_true",
+                   help="仿真后在原生 glfw 窗口实时播放（ESC / 关窗退出，默认 chase 机位）")
+    p.add_argument("--gl-pose-check", action="store_true",
+                   help="姿态链路自检（纯数学，不跑仿真、不建 GL 上下文）后退出")
     p.add_argument("--outdir", default="output/sim", help="输出目录")
     args = p.parse_args(argv)
 
+    # 渲染器生效值：arg > env GLIDER_RENDERER > 默认 mpl
+    renderer = args.renderer or os.environ.get("GLIDER_RENDERER", "mpl") or "mpl"
+
     if args.probe:
-        return _probe(args.probe_outdir)
+        return _probe(args.probe_outdir, renderer=args.renderer)
+
+    if args.gl_pose_check:
+        from gldeferred import pose_check
+        fails = pose_check(args.gl_model_fwd, args.gl_model_up, _parse_gl_rot(args.gl_model_rot))
+        return 1 if fails else 0
 
     # 正式仿真才导入重依赖（numpy / 气动模型），保证 --probe 在依赖缺失时也能诊断
     from aircraft import Glider
@@ -257,27 +302,33 @@ def main(argv=None):
         "cg": args.cg, "dihedral": args.dihedral, "speed": args.speed})
 
     # 可选：MP4 飞行回放（依赖 imageio-ffmpeg；缺失/失败时跳过，不影响主结果）
+    # renderer=gl 时走延迟渲染管线；GL 依赖缺失 / 上下文失败回退 mpl（沿用惯例）
     if args.video:
+        camera = args.gl_camera or "fixed"
+        size = _parse_gl_size(args.gl_size) or \
+            ((1024, 576) if camera in ("chase", "chase2") else (1280, 720))
         vdur = min(float(tele["t"][-1]), max(5.0, float(args.video_max)))
-        video_path = os.path.join(outdir, files["video"])
-        fps = max(4, int(args.video_fps))
-        renderer = args.renderer
-
+        done = False
         if renderer == "gl":
             try:
-                _gl_video(tele, glider, video_path, vdur, fps, args)
-                print(f"[video] wrote {files['video']} "
-                      f"(gl/{args.gl_camera} @ {args.video_fps}fps)")
-            except Exception as exc:  # noqa: BLE001 无 GL 上下文/依赖时优雅回退
-                print(f"[video] gl 渲染不可用，回退 matplotlib：{exc}", file=sys.stderr)
-                renderer = "mpl"
-
-        if renderer == "mpl":
+                from gldeferred import make_video_gl
+                gl_cfg, gl_cfg_view = _gl_setup(args)
+                make_video_gl(tele, glider, os.path.join(outdir, files["video"]),
+                              fps=max(4, int(args.video_fps)), start=0.0, end=vdur,
+                              cfg_view=gl_cfg_view, hud=args.gl_hud, camera=camera,
+                              size=size, cfg=gl_cfg, progress=lambda *a, **k: None)
+                print(f"[video] wrote {files['video']} via gl ({vdur:.0f}s @ {args.video_fps}fps)")
+                done = True
+            except Exception as exc:  # noqa: BLE001
+                print(f"[video] gl unavailable, fallback to mpl: {exc}", file=sys.stderr)
+        if not done:
             try:
                 from render import make_video
                 make_video(
-                    tele, glider, video_path,
-                    fps=fps, start=0.0, end=vdur,
+                    tele, glider,
+                    os.path.join(outdir, files["video"]),
+                    fps=max(4, int(args.video_fps)),
+                    start=0.0, end=vdur,
                     camera="fixed",
                     cfg_view=dict(spacing=80.0, trail=5000, elev=30, azim=-90,
                                   scale=6.0, ground_color=(0.45, 0.6, 0.45, 0.4),
@@ -294,6 +345,29 @@ def main(argv=None):
     else:
         files["video"] = None
 
+    # 调试/目检：单帧 PNG 预览与实时窗口（不影响主产物；失败仅告警）
+    if args.gl_preview is not None or args.gl_live:
+        camera_dbg = args.gl_camera or ("chase" if args.gl_live else "fixed")
+        size_dbg = _parse_gl_size(args.gl_size) or \
+            ((1024, 576) if camera_dbg in ("chase", "chase2") else (1280, 720))
+        try:
+            gl_cfg, gl_cfg_view = _gl_setup(args)
+            if args.gl_preview is not None:
+                from gldeferred import preview_png
+                out_png = os.path.join(outdir, "gl_preview.png")
+                preview_png(tele, glider, out_png, t=float(args.gl_preview),
+                           pose_set=args.gl_pose_set, cfg_view=gl_cfg_view,
+                           camera=camera_dbg, size=size_dbg, cfg=gl_cfg,
+                           hud=args.gl_hud, progress=print)
+                print(f"[gl-preview] wrote {out_png}")
+            if args.gl_live:
+                from gldeferred import live_window
+                live_window(tele, glider, fps=max(4, int(args.video_fps)),
+                            cfg_view=gl_cfg_view, camera=camera_dbg, size=size_dbg,
+                            cfg=gl_cfg, progress=print)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[gl] preview/live failed: {exc}", file=sys.stderr)
+
     backend.close()
 
     result = {
@@ -305,6 +379,7 @@ def main(argv=None):
             "autolevel": args.autolevel,
         },
         "backend": backend.name,
+        "renderer": renderer,
         "reason": summary.get("reason", "ok"),
         "glide_time_s": round(summary["time"], 2),
         "distance_m": round(summary["dist"], 1),

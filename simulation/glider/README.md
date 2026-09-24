@@ -5,7 +5,8 @@
 
 在 **novaPhy** 物理引擎（`novaphy` wheel 0.4.0，CPU 版）上做一架**符合空气动力学**的
 滑翔机 6 自由度仿真。`sim_service.py` 为无界面服务入口，供 **PBL 科创平台**后端调用：
-输出 3D 航迹图、遥测曲线图、遥测 CSV、`summary.json` 与**固定机位 MP4 飞行回放**。
+输出 3D 航迹图、遥测曲线图、遥测 CSV、`summary.json` 与**固定机位 MP4 飞行回放**
+（默认 matplotlib 渲染；`--renderer gl` 可切换 **GLB 模型 + OpenGL 延迟渲染**，见第 5 节）。
 
 > ⚠️ **本机运行限制**：交付的 `novaphy-0.4.0-cp311-cp311-linux_x86_64.whl` 是
 > **Linux x86\_64 + CPython 3.11 专用**。当前开发机是 Windows + Python 3.13，
@@ -43,108 +44,11 @@ python sim_service.py --dihedral 6 --cg 0.1 --speed 36 --video --video-fps 10 --
 * `flight_replay.mp4` —— 固定机位飞行回放（`--video` 时生成）
 
 常用参数：`--dihedral`、`--cg`、`--speed`、`--alt`、`--timeout`、`--backend`、
-`--video/--video-fps/--video-max`、`--renderer mpl|gl`（默认 `mpl`，可用环境变量
-`GLIDER_RENDERER` 覆盖）。
+`--video/--video-fps/--video-max`；渲染途径 `--renderer mpl|gl`（GL 参数表见第 5 节）。
 
 ***
 
-## 2. OpenGL 渲染途径（`--renderer gl`）
-
-在 matplotlib 渲染之外提供一条 **GPU 渲染途径**（`render_gl.py`，基于 moderngl），
-产出同样的 `flight_replay.mp4`：
-
-```bash
-# 默认：程序化盒体模型 + 内置着色器
-python sim_service.py --dihedral 6 --cg 0.1 --speed 36 --alt 150 --video \
-    --renderer gl --video-fps 10 --outdir output/gl1
-
-# 使用自定义 OBJ 模型 + 外部着色器目录（热替换，无需改 Python）
-python sim_service.py --dihedral 6 --cg 0.1 --speed 36 --video \
-    --renderer gl --model assets/airplane.obj --shader-dir my_shaders --outdir output/gl2
-```
-
-相关参数：
-
-| 参数                | 默认值        | 说明                                                                   |
-| ----------------- | ---------- | -------------------------------------------------------------------- |
-| `--renderer`      | `mpl`      | `mpl`（matplotlib）\| `gl`（OpenGL）                                     |
-| `--gl-size`       | `1280x720` | 渲染分辨率（H.264 要求偶数尺寸）                                                  |
-| `--gl-aa`         | `1`        | 超采样抗锯齿倍数                                                             |
-| `--gl-camera`     | `fixed`    | `fixed`（固定机位）\| `chase`（追逐机位）                                        |
-| `--gl-scale`      | `0`        | 飞机显示放大（0 = 按机位自动：fixed→6.0 / chase→1.0）                              |
-| `--gl-vert`       | `3.0`      | 固定机位**竖直增强**：放大高度波动以接近 matplotlib 观感（设 `1` 恢复真实等比例）                  |
-| `--model`         | 空          | 外部模型路径（`.obj` 或 `.glb/.gltf`）；为空则找 `assets/airplane.obj`，仍无则用程序化盒体网格 |
-| `--model-rot`     | `0 0 0`    | 模型自身坐标系内的朝向修正（度，X→Y→Z）                                               |
-| `--model-scale`   | `0`        | 模型显式缩放；0 = 按“最长轴 = 机身长”自动归一化                                         |
-| `--shader-dir`    | 空          | 外部 GLSL 着色器目录（含 `aircraft.vert/frag`、`line.vert/frag`）               |
-| `--gl-preview`    | 空          | 额外输出首帧 PNG（调试）                                                       |
-| `--dump-uniforms` | 否          | 把首帧 uniform 契约快照打印为 JSON（自检）                                         |
-
-GL 不可用（无 GPU / 无显示 / 依赖缺失）时自动回退 matplotlib，MP4 仍会生成，
-stderr 打印 `[video] gl 渲染不可用，回退 matplotlib：<原因>`。
-
-### 1.5.1 模型约定
-
-* 默认程序化网格由 `aircraft.py` 的 `Glider.parts()` 派生（7 个盒体，与 mpl 路径同外观）。
-
-* OBJ 模型使用**机体系**坐标：**x 前 / y 上 / z 右翼**，单位米。若模型朝向/比例不符，
-  用 `--model-rot` / `--model-scale` 修正；修正烘焙进网格后再按飞机姿态渲染，只做一次。
-
-* `.glb/.gltf` 同样用 `--model` 加载（经 `trimesh` 读取，所有子网格合并为一个，颜色优先取
-  顶点色，否则材质 baseColorFactor，再兜底统一灰白）。**单位 / 朝向未知一律归一到机身长**，
-  所以大多数建模工具导出的模型（常为 z-up 或米/厘米）都需要用 `--model-rot` 调朝向。
-
-* 不做贴图/MTL：渲染走顶点色 + 光照。需要贴图时在自定义着色器里加 `sampler2D` 即可。
-
-### 2.2 着色器与 uniform 契约
-
-着色器为 GLSL 330，放 `shaders/`（或 `--shader-dir` 指向的目录）：
-
-* `aircraft.vert` / `aircraft.frag` —— 飞机本体；
-
-* `line.vert` / `line.frag` —— 航迹与地面网格（仅 `u_mvp` + `u_color`）。
-
-飞机着色器可声明的 **uniform 契约**（渲染器每帧写入；未声明的会自动跳过）：
-
-**变换类**
-
-| Uniform        | 类型   | 含义                                               |
-| -------------- | ---- | ------------------------------------------------ |
-| `u_model`      | mat4 | 模型矩阵 `T(u_pos) · R(u_quat) · S(u_scale)`         |
-| `u_view`       | mat4 | 世界系 → 相机系                                        |
-| `u_proj`       | mat4 | 相机系 → 裁剪空间（透视）                                   |
-| `u_mvp`        | mat4 | `u_proj · u_view · u_model`（现成）                  |
-| `u_normal_mat` | mat4 | 法线变换 `transpose(inverse(u_view·u_model))` 左上 3×3 |
-
-**姿态 / 飞行状态**
-
-| Uniform                                 | 类型        | 含义                                     |
-| --------------------------------------- | --------- | -------------------------------------- |
-| `u_pos`                                 | vec3      | 世界位置 `[x, alt, z]` (m)                 |
-| `u_quat` / `u_euler`                    | vec4/vec3 | 姿态四元数 xyzw / 欧拉角 `(roll,pitch,yaw)` 弧度 |
-| `u_vel` / `u_omega`                     | vec3      | 世界速度 (m/s) / 世界角速度 (rad/s)             |
-| `u_alt` / `u_V`                         | float     | 高度 (m) / 空速 (m/s)                      |
-| `u_alpha` / `u_beta`                    | float     | 迎角 / 侧滑角 (rad)                         |
-| `u_CL` / `u_CD` / `u_sink`              | float     | 升力 / 阻力系数 / 下沉率 (m/s)                  |
-| `u_bank` / `u_pitch` / `u_heading`      | float     | 坡度 / 俯仰 / 航向 (deg)                     |
-| `u_elevator` / `u_aileron` / `u_rudder` | float     | 三个舵面偏转                                 |
-| `u_time` / `u_frame` / `u_scale`        | float/int | 仿真时间 (s) / 帧序号 / 显示放大倍数                |
-| `u_highlight`                           | float     | 0/1 异常姿态高亮（失控/失速标红）                    |
-
-**相机 / 屏幕**：`u_cam_eye` / `u_cam_target` / `u_cam_up`（vec3）、
-`u_fovy` / `u_near` / `u_far`（float）、`u_resolution`（vec2）。
-
-**光照 / 材质**：`u_light_dir` / `u_light_color` / `u_ambient`（vec3）、
-`u_base_color`（vec4，与顶点色相乘）。
-
-> 机器可读清单见 `render_gl.UNIFORM_CONTRACT`；角度约定：`u_euler/u_alpha/u_beta` 为
-> **弧度**，`u_bank/u_pitch/u_heading` 为**度**（与 telemetry CSV 一致）。
-> 自定义着色器可只用其中一部分属性/uniform；未使用的顶点属性（如 `in_color`）会被
-> GLSL 编译器优化掉，渲染器按程序实际声明自动适配。
-
-***
-
-## 3. 在 Linux（x86\_64 + Python 3.11）上使用真正的 novaPhy 后端
+## 2. 在 Linux（x86\_64 + Python 3.11）上使用真正的 novaPhy 后端
 
 ```bash
 # 1) 准备干净虚拟环境
@@ -166,7 +70,7 @@ python sim_service.py --dihedral 6 --cg 0.1 --speed 36 --video --backend novaphy
 
 ***
 
-## 4. 气动模型（`aero.py`）——“符合空气动力学”体现在哪
+## 3. 气动模型（`aero.py`）——“符合空气动力学”体现在哪
 
 滑翔机整机为**一个自由刚体**（质心在体原点，显式质量/惯量），气动面：
 左右主机翼半面、平尾(+升降舵)、垂尾(+方向舵)、机身阻力。
@@ -211,12 +115,102 @@ glider_sim/
 ├─ sim_core.py         # 后端无关的飞行循环、控制器、遥测
 ├─ backend_novaphy.py  # ★ novaPhy 后端（ModelBuilder+SolverSemiImplicit）
 ├─ backend_reference.py# 纯 numpy 参考后端（本地验证）
-├─ render.py           # matplotlib 渲染：固定机位/追逐镜头 + MP4/GIF 帧 + HUD
+├─ render.py           # matplotlib 渲染（默认）：固定机位/追逐镜头 + MP4 帧 + HUD
+├─ gldeferred.py       # ★ OpenGL 延迟渲染（--renderer gl）：GLB 模型 + G-buffer + FrameSink
+├─ gl_math.py          # 渲染数学薄适配层（内部全用 pyGLM，不手写线性代数）
+├─ gl_mesh.py          # GLB/OBJ 网格加载：节点变换烘焙、颜色、归一化、轴转换
+├─ glshaders/          # 延迟管线着色器（gbuffer / lighting / flat / blit）
+├─ assets/airplane.glb # 默认 GLB 模型（缺失时自动回退程序化盒体）
 ├─ plot_flight.py      # 高度/空速/迎角/下沉/L-D 图表、3D 航迹图
 ├─ sim_service.py      # ★ PBL 平台入口：headless 模拟 → 图/CSV/summary/MP4 回放
 ├─ requirements.txt    # Python 依赖清单（numpy/matplotlib 等）
 └─ output/             # 生成结果（png/csv/json/mp4）
 ```
+
+## 5. OpenGL 延迟渲染途径（`--renderer gl`）
+
+除默认 matplotlib 渲染外，另有基于 **OpenGL 延迟渲染** 的回放途径：加载 **GLB 模型**
+（默认 `assets/airplane.glb`），几何 pass 写 G-buffer（位置/法线/反照率 MRT），
+光照 pass 全屏三角形着色（太阳 + 半球环境光 + Blinn 高光 + 雾 + 程序化地面网格 + 天空渐变），
+overlay pass 画拖尾丝带与起/终点标记。
+
+**帧缓冲与呈现解耦**：渲染结果始终进离屏 FBO，由 `FrameSink` 协议负责呈现——
+`VideoSink`（MP4）/ `PngSink`（单帧 PNG）/ `WindowSink`（`--gl-live` 原生 glfw 实时窗口），
+未来新增呈现方式（流媒体等）只需新写 Sink，管线零改动。
+
+### 快速开始
+
+```bash
+# 姿态链路自检（纯数学，不跑仿真、不建 GL 上下文；退出码非 0 = 姿态有误）
+python sim_service.py --gl-pose-check
+
+# GL 渲染 MP4 回放（GL 依赖/上下文不可用时自动回退 mpl 并在 stderr 告警）
+python sim_service.py --dihedral 6 --cg 0.1 --speed 28 --renderer gl --video --outdir output/sim_gl
+
+# 单帧 PNG 预览（最快迭代环；t 秒可选，缺省 0）
+python sim_service.py --speed 28 --gl-preview 8 --outdir output/sim_prev
+
+# 用规范静态姿态目检（level / pitch20 / bank30 / yaw90）
+python sim_service.py --speed 28 --gl-preview --gl-pose-set bank30 --gl-camera chase
+
+# 实时调试窗口（chase 机位默认，ESC / 关窗退出）
+python sim_service.py --speed 28 --timeout 20 --gl-live
+```
+
+### GL 参数表（`sim_service.py`）
+
+| 参数                                           | 默认                    | 说明                                                         |
+| -------------------------------------------- | --------------------- | ---------------------------------------------------------- |
+| `--renderer {mpl,gl}`                        | mpl                   | 渲染途径；优先级 **arg > 环境变量** **`GLIDER_RENDERER`** **> 默认 mpl** |
+| `--gl-model PATH`                            | airplane.glb          | GLB/OBJ 模型；默认模型缺失/失败自动回退程序化盒体；**显式指定失败直接报错**（不静默换模型）       |
+| `--gl-model-fwd {+x,-x,+y,-y,+z,-z}`         | -x                    | 模型机头轴（airplane.glb 实测：垂尾在 +x 端、机头在 -x）                     |
+| `--gl-model-up {+x,-x,+y,-y,+z,-z}`          | +y                    | 模型上轴                                                       |
+| `--gl-model-rot YAW,PITCH,ROLL`              | 0,0,0                 | 模型姿态微调（度，叠加在轴转换之后）                                         |
+| `--gl-model-scale F\|0`                      | 0                     | 模型缩放；0 = auto（最长包围盒边归一到机身长度）                               |
+| `--gl-model-center {bbox,origin}`            | bbox                  | 居中方式：bbox 减包围盒中心（模型原点=COM），origin 保留原点                     |
+| `--gl-camera {fixed,chase,chase2}`           | fixed                 | 机位：fixed 走廊全景（1280×720）/ chase 后上方跟随（1024×576）/ chase2 低空平视跟随（视线近水平平行于地面，1024×576） |
+| `--gl-size WxH`                              | 按机位                   | 渲染分辨率覆盖                                                    |
+| `--gl-vert K`                                | fixed 3.0 / chase 1.0 | 场景竖直增强系数；**只作用于视图矩阵，模型姿态保持物理正确**                           |
+| `--gl-trail-state {alt,none}`                | alt                   | 拖尾着色：alt = 高空暖橙 → 低空亮绿渐变，none = 恒定蓝                         |
+| `--gl-trail-width PX`                        | 4                     | 拖尾屏幕像素宽度；0 = 关闭拖尾                                          |
+| `--gl-skybox / --no-gl-skybox`               | 开                     | 使用等距柱状环境贴图（assets/skyview.jpg）作为天空；关闭退回渐变天空                       |
+| `--gl-hud / --no-gl-hud`                     | 开                     | 回放叠加飞行数据 HUD                                               |
+| `--gl-preview [T]`                           | -                     | 仿真后输出 t=T 秒单帧 PNG 到 `<outdir>/gl_preview.png`              |
+| `--gl-pose-set {level,pitch20,bank30,yaw90}` | -                     | 配合 `--gl-preview`：用规范静态姿态替代该时刻真实姿态                         |
+| `--gl-live`                                  | -                     | 仿真后在原生 glfw 窗口实时播放（默认 chase 机位）                            |
+| `--gl-pose-check`                            | -                     | 姿态链路端到端自检后退出（详见下节）                                         |
+
+### GLB 模型约定与姿态处理
+
+模型从文件到画面经过四步，全部在 `gl_mesh.py` 的 `fit_parts` 中**烘焙进顶点**；
+之后的模型矩阵 `T(pos)·R(quat)·S(scale)` 是纯物理量，不含任何隐藏旋转：
+
+1. **轴转换 R\_conv**（`--gl-model-fwd/--gl-model-up`）：把"模型自身的前/上"对齐到
+   机体 x 前 / y 上（右手系，`model_fwd×model_up → body +z`），解决不同建模软件
+   朝向不一的问题；
+2. **微调**（`--gl-model-rot`）：轴对齐后的小角度修正（度）；
+3. **联合归一化**（`--gl-model-scale/--gl-model-center`）：多部件整体包围盒居中、
+   最长边缩放到 `aircraft.Glider.length` 量级（多部件一起变换，防止散架）；
+4. **逐帧姿态**：物理仿真输出的四元数 `tele["quat"]`（xyzw）经 pyGLM `mat4_cast`
+   生成旋转；法线用 `mat3(u_model)` 变换后归一化。
+
+**`--gl-pose-check`** **姿态保险栓**：对 level / pitch20° / bank30° / yaw90° 四个规范姿态
+× 三轴（机头/上/右翼），断言渲染链
+`T(pos)·R_glm(quat)·S(k)·(R_total @ model_axis)` 与物理链
+`pos + k·quat_rotate(quat, R_total @ model_axis)` 逐项一致（float64，容差 1e-9；
+`quat_rotate` 与物理积分同源）。任何轴约定漂移都会在此暴露，退出码非 0。
+
+### 回退行为
+
+* `--renderer gl` 但 **依赖缺失 / GL 上下文创建失败** → stderr 告警 + 回退 mpl 出片；
+
+* **默认模型** `airplane.glb` 缺失/损坏 → stderr 告警 + 程序化盒体（尺寸与机身一致）；
+
+* **显式** **`--gl-model`** 加载失败 → 直接报错（不静默换模型，姿态问题要显式暴露）；
+
+* 不装 GL 依赖（moderngl/trimesh/pyglm）时默认 mpl 路径完全不受影响。
+
+***
 
 ## 6. 常见问题
 

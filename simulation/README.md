@@ -4,7 +4,7 @@
 
 当前已落地板块：**飞机（滑翔机）**。规划中：火箭、月球车（见《物理引擎改进方案》）。
 
-***
+---
 
 ## 1. 目录结构
 
@@ -26,11 +26,11 @@ simulation/
    ├─ backend_novaphy.py   novaPhy 刚体求解后端（权威）
    ├─ backend_reference.py 纯 numpy 6DOF 参考后端（对拍影子 / 无 novaPhy 时兜底）
    ├─ sim_service.py       headless 服务入口（平台后端 spawn 的就是它）
-   ├─ render.py            3D 体视渲染（PNG / GIF / MP4）
-   ├─ gl_math.py           4x4 矩阵工具（OpenGL 渲染途径用，纯 numpy）
-   ├─ gl_mesh.py           程序化盒体网格 + OBJ 加载/导出（OpenGL 渲染途径用）
-   ├─ render_gl.py         OpenGL 渲染途径核心（moderngl，--renderer gl）
-   ├─ shaders/             GLSL 330 顶点/片段着色器（可替换，见 glider/README.md）
+   ├─ render.py            3D 体视渲染（默认 matplotlib，PNG / GIF / MP4）
+   ├─ gldeferred.py        OpenGL 延迟渲染（--renderer gl：GLB 模型 + G-buffer + FrameSink）
+   ├─ gl_math.py           渲染数学薄适配层（内部全用 pyGLM）
+   ├─ gl_mesh.py           GLB/OBJ 网格加载（节点变换烘焙 / 颜色 / 归一化 / 轴转换）
+   ├─ glshaders/           延迟管线着色器（gbuffer / lighting / flat / blit）
    ├─ plot_flight.py       2D 遥测曲线 + 3D 航迹图
    ├─ requirements.txt     reference 后端所需的 Python 依赖
    └─ output/              运行产物（已 gitignore）
@@ -39,7 +39,7 @@ simulation/
 **双后端设计**：`novaPhy` 只负责"刚体动力学积分"这一段，气动力由 `aero.py` / `sim_core.py`
 计算后注入。两个后端走完全相同的气动与控制器代码，因此行为可比、可对拍。
 
-***
+---
 
 ## 2. ⚠️ 必须自行放入 novaPhy 交付包
 
@@ -60,17 +60,17 @@ simulation/
    └─ THIRD_PARTY_NOTICES/
 ```
 
-> **目录名必须保持为** **`novaphy-0.4.0-cpu-cp311-linux-x86_64`**，因为 `wsl_setup.sh` 与
+> **目录名必须保持为 `novaphy-0.4.0-cpu-cp311-linux-x86_64`**，因为 `wsl_setup.sh` 与
 > `docker/Dockerfile` 都按这个路径查找 wheel。若你把它放在别处，可用 `WHEEL` 环境变量
 > 指定 wheel 的实际路径（见 `wsl_setup.sh` 头部注释）。
 
 ### 平台要求（wheel 标签 `cp311-cp311-linux_x86_64`，**非 manylinux**）
 
-| 项      | 要求                | 说明                                     |
-| ------ | ----------------- | -------------------------------------- |
-| 操作系统   | **Linux x86\_64** | Windows / macOS 一律装不上，必须走 WSL 或 Docker |
-| Python | **3.11**（cp311）   | 3.12 / 3.13 不可用                        |
-| glibc  | **≥ 2.38**        | Ubuntu 24.04 (2.39) / Debian 13 满足     |
+| 项 | 要求 | 说明 |
+|---|---|---|
+| 操作系统 | **Linux x86_64** | Windows / macOS 一律装不上，必须走 WSL 或 Docker |
+| Python | **3.11**（cp311） | 3.12 / 3.13 不可用 |
+| glibc | **≥ 2.38** | Ubuntu 24.04 (2.39) / Debian 13 满足 |
 
 可选校验交付包完整性：
 
@@ -78,7 +78,7 @@ simulation/
 cd simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64 && sha256sum -c SHA256SUMS
 ```
 
-***
+---
 
 ## 3. 三种运行方式
 
@@ -148,30 +148,26 @@ GLIDER_BACKEND=reference      # 强制走参考后端
 
 > ⚠️ 参考后端用于**开发与对拍**，教学/评分场景请用真 novaPhy（`GLIDER_BACKEND=auto` 或 `novaphy`）。
 
-***
+---
 
 ## 4. 环境变量
 
 完整清单与注释见 `backend/.env.example` 的「滑翔机物理引擎」一节。
 
-| 变量                      | 默认                               | 说明                                                      |
-| ----------------------- | -------------------------------- | ------------------------------------------------------- |
-| `GLIDER_PYTHON`         | `python`(Win) / `python3`(Linux) | 解释器。`wsl:<发行版>:<路径>` 前缀表示经 `wsl.exe` 调用                 |
-| `GLIDER_BACKEND`        | `auto`                           | `auto` / `novaphy` / `reference`                        |
-| `GLIDER_MAX_ACTIVE`     | `2`                              | 同时运行的模拟任务上限                                             |
-| `GLIDER_TIMEOUT`        | `100`                            | 单次最长仿真秒数（同时决定子进程预算）                                     |
-| `GLIDER_VIDEO`          | `1`                              | `0` 关闭 MP4 回放生成                                         |
-| `GLIDER_VIDEO_FPS`      | `10`                             | 回放帧率                                                    |
-| `GLIDER_VIDEO_MAX`      | `300`                            | 回放覆盖时长上限（秒）                                             |
-| `GLIDER_RENDERER`       | `mpl`                            | 回放渲染途径：`mpl`（matplotlib，默认）/ `gl`（OpenGL，需 GL 依赖与可用上下文） |
-| `GLIDER_RETENTION_DAYS` | `0`                              | error 状态结果保留天数；`0` = 不自动清理                              |
-| `DISK_WARN_PERCENT`     | `85`                             | `scripts/doctor.sh` 磁盘使用率告警阈值                           |
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GLIDER_PYTHON` | `python`(Win) / `python3`(Linux) | 解释器。`wsl:<发行版>:<路径>` 前缀表示经 `wsl.exe` 调用 |
+| `GLIDER_BACKEND` | `auto` | `auto` / `novaphy` / `reference` |
+| `GLIDER_RENDERER` | `mpl` | MP4 回放渲染器：`mpl`（matplotlib）/ `gl`（GLB 模型 + OpenGL 延迟渲染，需 moderngl/trimesh/pyglm，不可用自动回退 mpl；详见 `glider/README.md` 第 5 节） |
+| `GLIDER_MAX_ACTIVE` | `2` | 同时运行的模拟任务上限 |
+| `GLIDER_TIMEOUT` | `100` | 单次最长仿真秒数（同时决定子进程预算） |
+| `GLIDER_VIDEO` | `1` | `0` 关闭 MP4 回放生成 |
+| `GLIDER_VIDEO_FPS` | `10` | 回放帧率 |
+| `GLIDER_VIDEO_MAX` | `300` | 回放覆盖时长上限（秒） |
+| `GLIDER_RETENTION_DAYS` | `0` | error 状态结果保留天数；`0` = 不自动清理 |
+| `DISK_WARN_PERCENT` | `85` | `scripts/doctor.sh` 磁盘使用率告警阈值 |
 
-> `GLIDER_RENDERER=gl` 时，WSL/Docker 下的 Linux 环境需要 WSLg 或可用 EGL 才能建
-> OpenGL 上下文；无 GPU / 无显示 / 依赖缺失时**自动回退 matplotlib**，回放仍会生成
-> （stderr 打印回退原因），因此平台默认保持 `mpl`。
-
-***
+---
 
 ## 5. 自检与验收
 
@@ -189,13 +185,10 @@ cd /mnt/<盘符>/<...>/web/simulation/glider
 # 期望：stdout 打印一行 JSON，其中 "backend":"novaphy"、"reason":"landed"
 ```
 
-***
+---
 
 ## 6. 相关文档
 
-* `glider/README.md` —— 气动模型、参数含义、纯 Python 用法
-
-* 后端接入：`backend/routes/gliders.js`、`backend/controllers/gliderController.js`
-
-* 前端页面：`frontend/src/pages/glider/Simulator.jsx`、`frontend/src/api/glider.js`
-
+- `glider/README.md` —— 气动模型、参数含义、纯 Python 用法
+- 后端接入：`backend/routes/gliders.js`、`backend/controllers/gliderController.js`
+- 前端页面：`frontend/src/pages/glider/Simulator.jsx`、`frontend/src/api/glider.js`

@@ -1,19 +1,49 @@
-"""gl_math.py — OpenGL 渲染所需的 4x4 矩阵工具（纯 numpy，不依赖任何 GL 库）。
+﻿"""gl_math.py — OpenGL 渲染数学：pyGLM（glm）薄适配层。
+
+矩阵运算全部委托 pyGLM（GLM 的 Python 绑定），不自写线性代数。本模块只负责：
+
+1. **约定适配**
+   - numpy 行主序 ``(4,4)`` <-> glm 列主序内存；
+   - 物理四元数 ``tele["quat"]`` 的 ``(x,y,z,w)`` <-> ``glm.quat`` 的 ``(w,x,y,z)``；
+   - 内部用 ``dmat4``（float64）计算，输出仍转 float32 numpy，精度与旧自写实现一致。
+2. **接口稳定**
+   函数签名 / 语义（角度单位、先应用顺序、返回类型）与历史实现完全一致，
+   调用方（gl_mesh / gldeferred）不感知 glm 的存在。
 
 约定
 ----
-- 矩阵按 **行主序** 存放在 numpy 数组里（``M[row, col]``），向量按 **列向量** 参与乘法：
-  ``p' = M @ p``。这与线性代数书写习惯一致，便于阅读与单测。
-- 送给 OpenGL 时必须转成 **列主序** 字节流，统一走 :func:`gl_bytes`（内部做转置），
-  因此调用方永远不用关心 GL 的内存布局。
-- 角度：入参 ``deg`` 为度，``fovy`` 为弧度。
+- 返回 numpy **行主序** (4,4) float32，``M @ p`` 列向量乘法；
+- 上传 GL 走 :func:`gl_bytes`（float32 列主序字节流，moderngl ``uniform.write`` 直用）；
+- 角度：入参 ``deg`` 为度，``fovy`` 为弧度；
+- ``glm.mat4_cast`` 与 ``spatial.quat_to_matrix`` 的一致性由 ``gldeferred.pose_check``
+  做端到端断言（<1e-9），任何约定漂移都会在姿态自检中暴露。
 """
 
 from __future__ import annotations
 
 import numpy as np
+import glm
 
-from spatial import quat_to_matrix
+
+# ---------------------------------------------------------------------------
+# numpy <-> glm 转换（唯一的布局魔法所在地）
+# ---------------------------------------------------------------------------
+
+def _to_glm(m) -> glm.dmat4:
+    """numpy 行主序 (4,4) -> ``glm.dmat4``（float64 列主序）。"""
+    arr = np.ascontiguousarray(np.asarray(m, dtype=np.float64).T)
+    return glm.dmat4.from_bytes(arr.tobytes())
+
+
+def _to_np(m: glm.dmat4) -> np.ndarray:
+    """``glm.dmat4`` -> numpy 行主序 (4,4) float32。"""
+    arr = np.frombuffer(m.to_bytes(), dtype=np.float64).reshape(4, 4).T
+    return np.ascontiguousarray(arr, dtype=np.float32)
+
+
+def _vec3(v) -> glm.dvec3:
+    a = np.asarray(v, dtype=np.float64).reshape(3)
+    return glm.dvec3(float(a[0]), float(a[1]), float(a[2]))
 
 
 # ---------------------------------------------------------------------------
@@ -24,67 +54,56 @@ def mat4_identity() -> np.ndarray:
     return np.eye(4, dtype=np.float32)
 
 
-def mat4_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def mat4_mul(a, b) -> np.ndarray:
     """矩阵乘 ``a @ b``（先应用 b，再应用 a）。"""
-    return np.asarray(a, dtype=np.float32) @ np.asarray(b, dtype=np.float32)
+    return _to_np(_to_glm(a) * _to_glm(b))
 
 
 def mat4_translate(v) -> np.ndarray:
-    m = np.eye(4, dtype=np.float32)
-    m[:3, 3] = np.asarray(v, dtype=np.float32).reshape(3)
-    return m
+    return _to_np(glm.translate(glm.dmat4(1.0), _vec3(v)))
 
 
 def mat4_scale(s) -> np.ndarray:
     """尺度矩阵：``s`` 为标量时三轴等比，为长度 3 时逐轴缩放。"""
-    arr = np.asarray(s, dtype=np.float32)
+    arr = np.asarray(s, dtype=np.float64)
     if arr.ndim == 0:
-        arr = np.full(3, float(arr), dtype=np.float32)
-    m = np.eye(4, dtype=np.float32)
-    m[0, 0], m[1, 1], m[2, 2] = arr[0], arr[1], arr[2]
-    return m
-
-
-def _rot_x(a: float) -> np.ndarray:
-    c, s = np.cos(a), np.sin(a)
-    m = np.eye(4, dtype=np.float32)
-    m[1, 1], m[1, 2], m[2, 1], m[2, 2] = c, -s, s, c
-    return m
-
-
-def _rot_y(a: float) -> np.ndarray:
-    c, s = np.cos(a), np.sin(a)
-    m = np.eye(4, dtype=np.float32)
-    m[0, 0], m[0, 2], m[2, 0], m[2, 2] = c, s, -s, c
-    return m
-
-
-def _rot_z(a: float) -> np.ndarray:
-    c, s = np.cos(a), np.sin(a)
-    m = np.eye(4, dtype=np.float32)
-    m[0, 0], m[0, 1], m[1, 0], m[1, 1] = c, -s, s, c
-    return m
+        v = np.full(3, float(arr))
+    else:
+        v = arr.reshape(3)
+    return _to_np(glm.scale(glm.dmat4(1.0),
+                            glm.dvec3(float(v[0]), float(v[1]), float(v[2]))))
 
 
 def mat4_rot_xyz(deg) -> np.ndarray:
     """绕 X、Y、Z 依次旋转（度），等价于 ``Rz @ Ry @ Rx``（先绕 X 转）。"""
     rx, ry, rz = (np.radians(float(d)) for d in np.asarray(deg, dtype=np.float64).reshape(3))
-    return mat4_mul(_rot_z(rz), mat4_mul(_rot_y(ry), _rot_x(rx)))
+    m = glm.rotate(glm.dmat4(1.0), rz, glm.dvec3(0, 0, 1))
+    m = glm.rotate(m, ry, glm.dvec3(0, 1, 0))
+    m = glm.rotate(m, rx, glm.dvec3(1, 0, 0))
+    return _to_np(m)
 
 
 def mat4_from_pos_quat_scale(pos, quat, scale=1.0, corr: np.ndarray | None = None) -> np.ndarray:
     """模型矩阵：``T(pos) @ R(quat) @ S(scale) @ corr``。
 
-    ``corr`` 为模型自身坐标系内的朝向修正（例如 OBJ 模型不是 x 前/y 上/z 右时用
-    ``--model-rot`` 生成），缺省为单位阵。
+    ``quat`` 为物理约定 **(x, y, z, w)**（与 ``tele["quat"]`` 一致），内部转
+    ``glm.quat(w, x, y, z)`` 后用 ``mat4_cast`` 生成旋转。
+    ``corr`` 为模型自身坐标系内的朝向修正矩阵，缺省为单位阵。
     """
-    rot = np.eye(4, dtype=np.float32)
-    rot[:3, :3] = quat_to_matrix(quat).astype(np.float32)
-    m = mat4_mul(mat4_translate(pos), rot)
-    m = mat4_mul(m, mat4_scale(scale))
+    q = np.asarray(quat, dtype=np.float64).reshape(4)
+    gq = glm.dquat(float(q[3]), float(q[0]), float(q[1]), float(q[2]))
+    m = glm.translate(glm.dmat4(1.0), _vec3(pos))
+    m = m * glm.mat4_cast(gq)
+    arr = np.asarray(scale, dtype=np.float64)
+    if arr.ndim == 0:
+        v = np.full(3, float(arr))
+    else:
+        v = arr.reshape(3)
+    m = m * glm.scale(glm.dmat4(1.0),
+                      glm.dvec3(float(v[0]), float(v[1]), float(v[2])))
     if corr is not None:
-        m = mat4_mul(m, np.asarray(corr, dtype=np.float32))
-    return m
+        m = m * _to_glm(corr)
+    return _to_np(m)
 
 
 # ---------------------------------------------------------------------------
@@ -93,57 +112,48 @@ def mat4_from_pos_quat_scale(pos, quat, scale=1.0, corr: np.ndarray | None = Non
 
 def mat4_look_at(eye, target, up) -> np.ndarray:
     """视图矩阵（世界系 -> 相机系）：相机看向 -z，x 右、y 上。"""
-    eye = np.asarray(eye, dtype=np.float64).reshape(3)
-    target = np.asarray(target, dtype=np.float64).reshape(3)
-    up = np.asarray(up, dtype=np.float64).reshape(3)
-
-    f = target - eye
-    nf = np.linalg.norm(f)
-    f = np.array([0.0, 0.0, -1.0]) if nf < 1e-9 else f / nf
-
-    s = np.cross(f, up)
-    ns = np.linalg.norm(s)
-    s = np.array([1.0, 0.0, 0.0]) if ns < 1e-9 else s / ns
-
-    u = np.cross(s, f)
-
-    m = np.eye(4, dtype=np.float32)
-    m[0, :3] = s.astype(np.float32)
-    m[1, :3] = u.astype(np.float32)
-    m[2, :3] = (-f).astype(np.float32)
-    m[0, 3] = float(-np.dot(s, eye))
-    m[1, 3] = float(-np.dot(u, eye))
-    m[2, 3] = float(np.dot(f, eye))
-    return m
+    e, t, u = _vec3(eye), _vec3(target), _vec3(up)
+    if glm.length(t - e) < 1e-9:                       # 退化保护：视线为零
+        t = e + glm.dvec3(0, 0, -1)
+    return _to_np(glm.lookAt(e, t, u))
 
 
 def mat4_perspective(fovy_rad: float, aspect: float, near: float, far: float) -> np.ndarray:
-    """透视投影矩阵（相机系 -> 裁剪空间）。"""
+    """透视投影矩阵（相机系 -> 裁剪空间，GL 深度 [-1, 1]）。"""
     aspect = float(aspect) if abs(float(aspect)) > 1e-9 else 1.0
     near = max(float(near), 1e-4)
     far = max(float(far), near * 1.0001)
-    t = np.tan(float(fovy_rad) * 0.5)
-    t = t if abs(t) > 1e-9 else 1e-6
-
-    m = np.zeros((4, 4), dtype=np.float32)
-    m[0, 0] = 1.0 / (aspect * t)
-    m[1, 1] = 1.0 / t
-    m[2, 2] = -(far + near) / (far - near)
-    m[2, 3] = -2.0 * far * near / (far - near)
-    m[3, 2] = -1.0
-    return m
+    fovy = float(fovy_rad)
+    fovy = fovy if abs(fovy) > 1e-9 else 1e-6
+    m32 = glm.perspective(fovy, aspect, near, far)   # pyGLM 无 double 重载，float32（渲染标准精度）
+    arr = np.frombuffer(m32.to_bytes(), dtype=np.float32).reshape(4, 4).T
+    return np.ascontiguousarray(arr)
 
 
 def normal_matrix(model_view: np.ndarray) -> np.ndarray:
     """法线变换矩阵：``transpose(inverse(MV[:3,:3]))``，扩成 4x4 便于统一上传。"""
-    mv = np.asarray(model_view, dtype=np.float64)
     try:
-        n = np.linalg.inv(mv[:3, :3]).T
-    except np.linalg.LinAlgError:
-        n = np.eye(3)
-    m = np.eye(4, dtype=np.float32)
-    m[:3, :3] = n.astype(np.float32)
-    return m
+        n = glm.transpose(glm.inverse(glm.dmat3(_to_glm(model_view))))
+        out = np.array(n, dtype=np.float64)   # pyGLM -> numpy 已是行主序数学矩阵
+        if np.isnan(out).any():
+            raise ValueError("NaN")
+        m = np.eye(4, dtype=np.float32)
+        m[:3, :3] = out.astype(np.float32)
+        return m
+    except Exception:  # noqa: BLE001 奇异矩阵回退单位阵（与旧实现一致）
+        return np.eye(4, dtype=np.float32)
+
+
+def mat4_invert(m: np.ndarray) -> np.ndarray:
+    """4x4 矩阵求逆（延迟管线用 ``(proj@view)^-1`` 从 NDC 重构世界射线）。"""
+    try:
+        inv = glm.inverse(_to_glm(m))
+        out = _to_np(inv)
+        if np.isnan(out).any():
+            raise ValueError("NaN")
+        return out
+    except Exception:  # noqa: BLE001 奇异矩阵回退单位阵
+        return np.eye(4, dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +161,7 @@ def normal_matrix(model_view: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def gl_bytes(m: np.ndarray) -> bytes:
-    """把行主序 numpy 矩阵转成 GL 需要的列主序 float32 字节流。
+    """把行主序 numpy 矩阵转成 GL 需要的 **float32 列主序** 字节流。
 
     moderngl 的 ``uniform.write()`` 按 GL 约定解释内存，因此这里必须转置；
     所有 uniform 上传都应经过本函数，调用方无需关心布局。
@@ -161,7 +171,7 @@ def gl_bytes(m: np.ndarray) -> bytes:
 
 
 def transform_points(m: np.ndarray, pts) -> np.ndarray:
-    """用 4x4 矩阵变换点集（N,3），返回齐次除法后的 (N,3)。主要用于自检。"""
+    """用 4x4 矩阵批量变换点集（N,3），返回齐次除法后的 (N,3)。主要用于自检。"""
     pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
     hom = np.concatenate([pts, np.ones((len(pts), 1))], axis=1)
     out = hom @ np.asarray(m, dtype=np.float64).T
