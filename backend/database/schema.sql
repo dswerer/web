@@ -677,3 +677,24 @@ CREATE TRIGGER IF NOT EXISTS ai_chunks_au AFTER UPDATE ON ai_chunks BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_ai_documents_course ON ai_documents(course_id, enabled, status);
 CREATE INDEX IF NOT EXISTS idx_ai_chunks_document ON ai_chunks(document_id);
+
+-- AI 调用运行记录，不保存原始提问、课程资料、回答或密钥。
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER,
+  course_id INTEGER,
+  request_day TEXT NOT NULL,
+  model TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','succeeded','failed')),
+  error_code TEXT,
+  provider_request_id TEXT,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  total_tokens INTEGER,
+  duration_ms INTEGER,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_day_user ON ai_usage(request_day, user_id);

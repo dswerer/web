@@ -42,6 +42,10 @@ function userDeletionBlockers(userId) {
     ...[
       ['enrollments', '课程参与记录（含已移除记录）'],
       ['lesson_progress', '课时进度'],
+      ['lesson_review_completions', '课堂回顾记录'],
+      ['student_card_progress', '知识卡片进度'],
+      ['card_exercise_attempts', '练习作答记录'],
+      ['lesson_learning_reports', '学习报告'],
       ['works', '学生作品'],
       ['reflections', '反思日志'],
       ['evaluations', '学生评价'],
@@ -57,6 +61,9 @@ function userDeletionBlockers(userId) {
     { label: '实践队参与记录', count: db.prepare('SELECT COUNT(*) c FROM team_members WHERE user_id = ?').get(userId).c, hint: '请保留账号及历史档案' },
     { label: '创建的课程', count: db.prepare('SELECT COUNT(*) c FROM courses WHERE created_by = ?').get(userId).c, hint: '请先转移或删除课程' },
     { label: '授课课时', count: db.prepare('SELECT COUNT(*) c FROM lessons WHERE instructor_id = ?').get(userId).c, hint: '请先调整授课教师' },
+    { label: '负责学生的教师关系', count: db.prepare('SELECT COUNT(*) c FROM users WHERE teacher_id = ?').get(userId).c, hint: '请先移交负责学生' },
+    { label: '负责学生的导师关系', count: db.prepare('SELECT COUNT(*) c FROM users WHERE mentor_id = ?').get(userId).c, hint: '请先移交负责学生' },
+    { label: '学习报告评审记录', count: db.prepare('SELECT COUNT(*) c FROM lesson_learning_reports WHERE reviewer_id = ?').get(userId).c, hint: '请保留评审人身份' },
     { label: '上传的课程资源', count: db.prepare('SELECT COUNT(*) c FROM resources WHERE upload_by = ?').get(userId).c, hint: '请先转移或删除资源' },
     { label: '上传的课程回放', count: db.prepare('SELECT COUNT(*) c FROM course_replays WHERE created_by = ?').get(userId).c, hint: '请先转移或删除回放' },
     { label: '作品评审记录', count: db.prepare('SELECT COUNT(*) c FROM work_reviews WHERE reviewer_id = ?').get(userId).c, hint: '评审记录将随删除丢失' },
@@ -494,6 +501,14 @@ exports.updateUser = (req, res) => {
       ((existing.archived_at || existing.is_active !== 1) && role !== 'student')
     )) return res.status(400).json({ error: '请先通过学生状态管理功能恢复或停用账号' });
 
+    if (MANAGED_ROLES.includes(role) && role !== existing.role) {
+      const blockers = userDeletionBlockers(userId);
+      if (blockers.length) return res.status(409).json({
+        error: '账号已有业务历史或职责关联，请保留原身份；需要新身份时另建账号',
+        blockers: blockers.map(({ label, count }) => ({ label, count })),
+      });
+    }
+
     if (!real_name || !MANAGED_ROLES.includes(role)) {
       return res.status(400).json({ error: '姓名和身份不能为空' });
     }
@@ -518,12 +533,19 @@ exports.updateUser = (req, res) => {
     const finalClassId = role === 'academic_mentor' ? null : class_id;
     const active = is_active === undefined ? existing.is_active : toBooleanInt(is_active);
 
-    db.prepare(
-      `UPDATE users
-       SET real_name = ?, role = ?, school_id = ?, class_id = ?, email = ?, phone = ?, profile = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`
-    ).run(real_name, role, finalSchoolId || null, finalClassId || null,
-          email || null, phone || null, profile || null, active, userId);
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE users
+         SET real_name = ?, role = ?, school_id = ?, class_id = ?, email = ?, phone = ?, profile = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      ).run(real_name, role, finalSchoolId || null, finalClassId || null,
+            email || null, phone || null, profile || null, active, userId);
+
+      if (role !== existing.role) {
+        db.prepare('UPDATE users SET auth_version = auth_version + 1 WHERE id = ?').run(userId);
+        db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId);
+      }
+    })();
 
     res.json({ message: '用户信息已更新' });
   } catch (err) {

@@ -154,7 +154,7 @@ exports.detail = (req, res) => {
     }
     if (!COURSE_MANAGER_ROLES.includes(req.user.role) &&
         !(req.user.role === 'student' && course.status === 'published')) {
-      return res.status(400).json({ error: '课程不存在' });
+      return res.status(404).json({ error: '课程不存在' });
     }
 
     const lessons = db.prepare(`SELECT l.*, COALESCE(lp.progress, 0) AS progress,
@@ -165,12 +165,13 @@ exports.detail = (req, res) => {
       WHERE l.course_id = ? ORDER BY l.sort_order`).all(req.user.role === 'student' ? req.user.id : null, id);
     const tasks = db.prepare(`SELECT t.*, l.title AS lesson_title FROM tasks t
       JOIN lessons l ON l.id = t.lesson_id WHERE l.course_id = ?
+      ${req.user.role === 'student' ? "AND l.status != 'cancelled' AND t.status = 'active'" : ''}
       ORDER BY l.sort_order, t.sort_order`).all(id);
     const progress = req.user.role === 'student'
       ? db.prepare(`SELECT COALESCE(ROUND(AVG(COALESCE(lp.progress, 0))), 0) AS progress
           FROM lessons l LEFT JOIN lesson_progress lp
             ON lp.lesson_id = l.id AND lp.student_id = ?
-          WHERE l.course_id = ?`).get(req.user.id, id).progress
+          WHERE l.course_id = ? AND l.status != 'cancelled'`).get(req.user.id, id).progress
       : 0;
     const resources = db.prepare('SELECT * FROM resources WHERE course_id = ? ORDER BY created_at DESC').all(id).map(toFileDto);
     const enrollments = (() => {
@@ -485,13 +486,15 @@ exports.addTask = (req, res) => {
       return res.status(400).json({ error: '任务名称不能为空' });
     }
 
-    const lesson = db.prepare('SELECT course_id FROM lessons WHERE id = ?').get(lesson_id);
+    const lesson = db.prepare('SELECT course_id, status FROM lessons WHERE id = ?').get(lesson_id);
     if (!lesson) {
       return res.status(400).json({ error: '课时不存在' });
     }
     if (!canManageCourse(req.user, lesson.course_id)) {
       return res.status(403).json({ error: '无权管理该课程' });
     }
+
+    if (lesson.status === 'cancelled') return res.status(409).json({ error: '不能向已取消课时添加任务' });
 
     const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM tasks WHERE lesson_id = ?').get(lesson_id);
 
@@ -633,9 +636,9 @@ exports.deleteReplay = (req, res) => {
   }
 };
 
-// 回放流式地址签名：HMAC-SHA256(secret, `${replayId}:${uid}:${exp}`)，10 分钟有效
-function signReplay(replayId, uid, exp, secret) {
-  return crypto.createHmac('sha256', secret).update(`${replayId}:${uid}:${exp}`).digest('hex');
+// 签名绑定会话版本；停用、归档、重置密码和角色变更后旧播放链接不能复活。
+function signReplay(replayId, uid, version, exp, secret) {
+  return crypto.createHmac('sha256', secret).update(`${replayId}:${uid}:${version}:${exp}`).digest('hex');
 }
 
 // 生成短期签名播放地址（前端 <video> 直挂，无法携带 Authorization 头）
@@ -650,8 +653,9 @@ exports.streamUrl = (req, res) => {
       return res.status(404).json({ error: '课程回放不存在' });
     }
     const exp = Math.floor(Date.now() / 1000) + 600;
-    const sig = signReplay(replay.id, req.user.id, exp, req.app.get('jwt_secret'));
-    res.json({ url: `/api/courses/replays/${replay.id}/stream?exp=${exp}&uid=${req.user.id}&sig=${sig}`, expires_in: 600 });
+    const version = req.user.auth_version || 0;
+    const sig = signReplay(replay.id, req.user.id, version, exp, req.app.get('jwt_secret'));
+    res.json({ url: `/api/courses/replays/${replay.id}/stream?exp=${exp}&uid=${req.user.id}&v=${version}&sig=${sig}`, expires_in: 600 });
   } catch (err) {
     console.error('生成回放播放地址错误:', err);
     res.status(500).json({ error: '生成播放地址失败' });
@@ -672,14 +676,15 @@ exports.streamReplay = (req, res) => {
     // 无 Bearer 时走签名校验：exp 未过期 + sig 匹配 + 按签名 uid 实时查库，RBAC 仍以数据库为准
     let user = req.user;
     if (!user) {
-      const { exp, uid, sig } = req.query;
-      if (!exp || !uid || !sig) return res.status(401).json({ error: '未登录' });
+      const { exp, uid, v, sig } = req.query;
+      if (![exp, uid, v].every(value => typeof value === 'string' && /^\d{1,16}$/.test(value)) ||
+          typeof sig !== 'string' || !/^[a-f0-9]{64}$/.test(sig)) return res.status(401).json({ error: '播放链接无效' });
       const expMs = Number(exp) * 1000;
       if (!Number.isFinite(expMs) || Date.now() > expMs) return res.status(401).json({ error: '播放链接已过期，请重新进入课程详情' });
-      const expected = signReplay(replay.id, uid, exp, req.app.get('jwt_secret'));
-      if (sig !== expected) return res.status(401).json({ error: '播放链接无效' });
-      const urow = db.prepare('SELECT id, role, school_id FROM users WHERE id = ? AND is_active = 1').get(uid);
-      if (!urow) return res.status(401).json({ error: '账号不可用' });
+      const expected = signReplay(replay.id, uid, v, exp, req.app.get('jwt_secret'));
+      if (!crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) return res.status(401).json({ error: '播放链接无效' });
+      const urow = db.prepare('SELECT id, role, school_id, auth_version, force_reset_password FROM users WHERE id = ? AND is_active = 1 AND archived_at IS NULL').get(uid);
+      if (!urow || urow.auth_version !== Number(v) || urow.force_reset_password) return res.status(401).json({ error: '账号状态已变化，请重新登录后获取播放链接' });
       user = urow;
     }
 

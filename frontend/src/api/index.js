@@ -105,7 +105,7 @@ export const archiveAPI = {
 
 export const aiAPI = {
   getCourses: () => client.get('/dashboard/ai/courses'),
-  ask: (question, course_id) => client.post('/dashboard/ai/ask', { question, course_id }),
+  ask: (question, course_id) => client.post('/dashboard/ai/ask', { question, course_id }, { timeout: 45000 }),
   getSettings: () => client.get('/dashboard/ai/settings'),
   saveSettings: (data) => client.put('/dashboard/ai/settings', data),
   getDocuments: (courseId) => client.get(`/dashboard/ai/courses/${courseId}/documents`),

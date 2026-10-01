@@ -171,7 +171,7 @@ exports.index = (req, res) => {
       const myCourses = db.prepare(`
         SELECT c.*, e.id as enrollment_id, e.enrolled_at,
           (SELECT COUNT(DISTINCT COALESCE(w2.parent_work_id, w2.id)) FROM works w2 WHERE w2.student_id = ? AND w2.enrollment_id = e.id) as my_work_count,
-          (SELECT COUNT(*) FROM lessons WHERE course_id = c.id) as total_lessons
+          (SELECT COUNT(*) FROM lessons WHERE course_id = c.id AND status != 'cancelled') as total_lessons
         FROM enrollments e
         JOIN courses c ON e.course_id = c.id
         WHERE e.student_id = ? AND e.status = 'active' AND c.status = 'published'
@@ -202,6 +202,7 @@ exports.index = (req, res) => {
         JOIN lessons l ON l.course_id = c.id
         LEFT JOIN users u ON u.id = l.instructor_id
         WHERE e.student_id = ? AND e.status = 'active'
+          AND l.status = 'scheduled'
           AND l.start_at IS NOT NULL AND datetime(l.start_at) >= datetime('now', 'localtime', '-1 hour')
         ORDER BY datetime(l.start_at) ASC LIMIT 1
       `).get(user.id);
@@ -215,6 +216,7 @@ exports.index = (req, res) => {
         JOIN lessons l ON l.course_id = c.id
         JOIN tasks t ON t.lesson_id = l.id
         WHERE e.student_id = ? AND e.status = 'active'
+          AND l.status != 'cancelled' AND t.status = 'active'
           AND (NOT EXISTS (SELECT 1 FROM works w WHERE w.student_id = e.student_id AND w.task_id = t.id)
                OR (SELECT w.review_status FROM works w
                    WHERE w.student_id = e.student_id AND w.task_id = t.id
@@ -228,7 +230,10 @@ exports.index = (req, res) => {
         FROM works w
         LEFT JOIN enrollments e ON w.enrollment_id = e.id
         LEFT JOIN courses c ON e.course_id = c.id
+        JOIN tasks t ON t.id = w.task_id AND t.status = 'active'
+        JOIN lessons l ON l.id = t.lesson_id AND l.status != 'cancelled'
         WHERE w.student_id = ? AND w.review_status = 'rejected'
+          AND e.status = 'active' AND c.status = 'published'
           AND NOT EXISTS (SELECT 1 FROM works newer
                           WHERE newer.parent_work_id = COALESCE(w.parent_work_id, w.id)
                             AND newer.version > w.version)
