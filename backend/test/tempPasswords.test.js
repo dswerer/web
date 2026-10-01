@@ -142,10 +142,14 @@ test('重置撤销旧 refresh token、阻止旧业务会话；临时密码改密
   assert.notEqual(reset.body.temp_password, created.body.temp_password);
   assert.equal((await login('reset-flow', created.body.temp_password)).status, 401);
   assert.equal((await api('/auth/refresh', { refresh_token: old.body.refresh_token }, null)).status, 401);
-  assert.equal((await api('/courses', undefined, old.body.token)).body.code, 'FORCE_RESET');
+  assert.equal((await api('/courses', undefined, old.body.token)).status, 401);
   const temporary = await login('reset-flow', reset.body.temp_password);
+  assert.equal((await api('/courses', undefined, temporary.body.token)).body.code, 'FORCE_RESET');
   const changed = await api('/auth/change-password', { old_password: reset.body.temp_password, new_password: legacyPassword }, temporary.body.token);
   assert.equal(changed.status, 200);
+  assert.equal((await api('/courses', undefined, temporary.body.token)).status, 401);
+  assert.equal((await api('/courses', undefined, old.body.token)).status, 401);
+  assert.equal((await api('/courses', undefined, changed.body.token)).status, 200);
   assert.equal((await login('reset-flow', reset.body.temp_password)).status, 401);
   const logged = await login('reset-flow', legacyPassword);
   assert.equal(logged.status, 200);

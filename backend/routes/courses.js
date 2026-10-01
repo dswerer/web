@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/courseController');
-const { requireAuth, requirePasswordChanged, requireRole } = require('../middleware/auth');
+const { requireAuth, requirePasswordChanged, requireRole, optionalAuth } = require('../middleware/auth');
 const { uploadResource, uploadReplay, validateUploadedFiles } = require('../middleware/upload');
 
 // 回放流式播放：支持签名 URL 访问（<video> 直挂无法携带 Bearer），鉴权在控制器内完成。
 // 必须声明在 router.use(requireAuth) 之前。
-router.get('/replays/:replayId/stream', controller.streamReplay);
+router.get('/replays/:replayId/stream', optionalAuth,
+  (req, res, next) => req.user ? requirePasswordChanged(req, res, next) : next(), controller.streamReplay);
 
 router.use(requireAuth);
 router.use(requirePasswordChanged);

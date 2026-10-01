@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/authController');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePasswordChanged } = require('../middleware/auth');
 const { loginRateLimit } = require('../middleware/loginRateLimit');
 
-router.get('/schools', controller.getSchools);
-router.get('/classes', controller.getClasses);
+// 注册已关闭；组织目录只供登录后的课程管理使用。
+router.get('/schools', requireAuth, requirePasswordChanged, requireRole('admin', 'academic_mentor'), controller.getSchools);
+router.get('/classes', requireAuth, requirePasswordChanged, requireRole('admin', 'academic_mentor'), controller.getClasses);
 // AUTH-07：登录接口增加 IP 限流 / 用户名失败限流 / 账户锁定
 router.post('/login', loginRateLimit(controller.login));
 // 公开注册已关闭（线下课程定位：账号统一由管理员导入/创建）。

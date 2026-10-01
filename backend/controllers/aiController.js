@@ -19,7 +19,7 @@ function canManageKnowledge(user, courseId) {
 
 function fail(res, err) {
   if (!err.status) console.error('灵境小智错误:', err);
-  return res.status(err.status || 500).json({ error: err.status ? err.message : '灵境小智暂时遇到了问题，请稍后再试' });
+  return res.status(err.status || 500).json({ error: err.status ? err.message : '灵境小智暂时遇到了问题，请稍后再试', code: err.code || 'AI_ERROR', request_id: err.requestId });
 }
 
 exports.getCourses = (req, res) => {
@@ -48,6 +48,12 @@ exports.ask = async (req, res) => {
     const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
     if (!canUseCourse(req.user, course)) return res.status(403).json({ error: '无权向该课程提问' });
     const result = await answerService.ask(req.user, course, question);
+    const current = db.prepare('SELECT role, is_active, archived_at, auth_version FROM users WHERE id = ?').get(req.user.id);
+    const currentCourse = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    if (!current || current.is_active !== 1 || current.archived_at || current.role !== req.user.role ||
+        current.auth_version !== (req.user.auth_version || 0) || !canUseCourse(req.user, currentCourse)) {
+      return res.status(403).json({ error: '账号或课程权限已变化，请刷新后重试', code: 'AI_ACCESS_CHANGED', request_id: result.request_id });
+    }
     res.json(result);
   } catch (err) { fail(res, err); }
 };

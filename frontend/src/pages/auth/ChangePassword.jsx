@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Form, Input, Button, Typography, Alert, message } from 'antd';
 import { LockOutlined, KeyOutlined } from '@ant-design/icons';
-import { authAPI } from '../../api';
 import { useAuth } from '../../store/AuthContext';
 import { homeForRole } from '../../utils/roleNavigation';
 
@@ -10,7 +9,7 @@ const { Title, Text } = Typography;
 
 export default function ChangePassword() {
   const navigate = useNavigate();
-  const { user, refreshUser } = useAuth();
+  const { user, changePassword } = useAuth();
   const [loading, setLoading] = useState(false);
 
   const isForced = !!user?.force_reset_password;
@@ -18,10 +17,8 @@ export default function ChangePassword() {
   const onFinish = async (values) => {
     setLoading(true);
     try {
-      await authAPI.changePassword({ old_password: values.old_password, new_password: values.new_password });
+      const updatedUser = await changePassword({ old_password: values.old_password, new_password: values.new_password });
       message.success('密码修改成功');
-      // 清除 force_reset_password 标志（重新拉取用户信息）
-      const updatedUser = await refreshUser().catch(() => null);
       navigate(homeForRole(updatedUser?.role || user?.role), { replace: true });
     } catch {
       // 错误已由拦截器提示

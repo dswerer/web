@@ -58,7 +58,7 @@ function taskQuery(user) {
     FROM tasks t
     JOIN lessons l ON l.id = t.lesson_id
     JOIN courses c ON c.id = l.course_id
-    WHERE c.status = 'published' AND t.status = 'active'${scopeSql}
+    WHERE c.status = 'published' AND l.status != 'cancelled' AND t.status = 'active'${scopeSql}
     ORDER BY c.title, l.sort_order, t.sort_order, t.created_at
   `).all(userId || null, userId || null, userId || null, userId || null, ...scopeParams);
   return tasks.map((task) => ({
@@ -86,7 +86,7 @@ exports.detail = (req, res) => {
       SELECT t.*, l.title AS lesson_title, l.course_id, c.title AS course_title,
         c.description AS course_description, c.created_by
       FROM tasks t JOIN lessons l ON l.id = t.lesson_id JOIN courses c ON c.id = l.course_id
-      WHERE t.id = ? AND c.status = 'published' AND t.status = 'active'
+      WHERE t.id = ? AND c.status = 'published' AND l.status != 'cancelled' AND t.status = 'active'
     `).get(req.params.id);
     if (!task) return res.status(404).json({ error: '任务不存在' });
 

@@ -4,11 +4,10 @@ const controller = require('../controllers/studentController');
 const { requireAuth, requirePasswordChanged, requireRole } = require('../middleware/auth');
 const { uploadImport } = require('../middleware/upload');
 
-// 公开接口（获取班级列表，注册用）
-router.get('/classes/:schoolId', controller.getClasses);
-
 router.use(requireAuth);
 router.use(requirePasswordChanged);
+
+router.get('/classes/:schoolId', requireRole('admin', 'academic_mentor', 'teacher'), controller.getClasses);
 
 // 用户列表
 router.get('/', requireRole('admin', 'academic_mentor', 'teacher'), controller.list);

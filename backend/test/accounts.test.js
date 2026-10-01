@@ -74,8 +74,13 @@ test('两个学校的同名学生可创建并使用各自账号登录；首次�
   assert.equal(a.body.user.password_hash, undefined);
   const blocked = await request('/courses', { token: a.body.token });
   assert.equal(blocked.body.code, 'FORCE_RESET');
-  assert.equal((await request('/auth/change-password', { method: 'POST', token: a.body.token, body: { old_password: credentials.get('BJFX-2026-0001'), new_password: 'ChangedPass!234' } })).status, 200);
-  assert.equal((await request('/courses', { token: a.body.token })).status, 200);
+  const changed = await request('/auth/change-password', { method: 'POST', token: a.body.token, body: { old_password: credentials.get('BJFX-2026-0001'), new_password: 'ChangedPass!234' } });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.user.force_reset_password, 0);
+  assert.equal((await request('/courses', { token: a.body.token })).status, 401);
+  assert.equal((await request('/courses', { token: changed.body.token })).status, 200);
+  assert.equal((await request('/auth/refresh', { method:'POST',token:null,body:{refresh_token:a.body.refresh_token} })).status, 401);
+  assert.equal((await request('/auth/refresh', { method:'POST',token:null,body:{refresh_token:changed.body.refresh_token} })).status, 200);
   assert.equal((await login('BJFX-2026-0001', 'ChangedPass!234')).status, 200);
 });
 
@@ -155,6 +160,9 @@ test('CSV 和 Excel 文件导入均识别登录账号列', async () => {
     ['accounts.csv', '\uFEFF登录账号,姓名,学校,班级\nCSV-0001,王小明,学校A,一班', 'CSV-0001'],
     ['accounts.xlsx', XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }), 'XLSX-0001'],
   ];
+  const legacyBook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(legacyBook, XLSX.utils.json_to_sheet([{ 登录账号: 'XLS-0001', 姓名: '王小明', 学校: '学校B', 班级: '二班' }]), '账号');
+  files.push(['accounts.xls', XLSX.write(legacyBook, { type: 'buffer', bookType: 'biff8' }), 'XLS-0001']);
   for (const [name, content, username] of files) {
     const form = new FormData();
     form.append('file', new Blob([content]), name);

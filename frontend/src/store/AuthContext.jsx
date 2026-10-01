@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components, react-hooks/set-state-in-effect */
 import { createContext, useContext, useState, useEffect } from 'react';
 import { authAPI } from '../api';
+import { saveAuthSession } from '../utils/authSession';
 
 const AuthContext = createContext(null);
 
@@ -41,14 +42,16 @@ export function AuthProvider({ children }) {
     setLoading(false);
   }, []);
 
-  const login = async (username, password) => {
-    const res = await authAPI.login(username, password);
-    localStorage.setItem('token', res.token);
-    localStorage.setItem('refresh_token', res.refresh_token);
-    localStorage.setItem('user', JSON.stringify(res.user));
-    setUser(res.user);
-    return res.user;
+  const applySession = (res) => {
+    const nextUser = saveAuthSession(localStorage, res);
+    setUser(nextUser);
+    return nextUser;
   };
+
+  const login = async (username, password) => applySession(await authAPI.login(username, password));
+
+  // 改密已撤销旧会话，先保存新凭证再继续请求业务接口。
+  const changePassword = async (data) => applySession(await authAPI.changePassword(data));
 
   const register = async (data) => {
     return await authAPI.register(data);
@@ -64,7 +67,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser, changePassword }}>
       {children}
     </AuthContext.Provider>
   );
