@@ -3,6 +3,3 @@
 numpy>=1.24
 matplotlib>=3.7
 Pillow>=9.0
-# MP4 回放（--video）所需
-imageio>=2.31
-imageio-ffmpeg>=0.4.9

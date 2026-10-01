@@ -43,10 +43,6 @@ const GLIDER_ALT = 150;            // 投放高度固定 (m)，避免变量过�
 // 单次最长仿真时间(s)：读环境变量 GLIDER_TIMEOUT 可调，默认 100。
 // 150m 投放、L/D≈15 的典型稳定滑翔约需 65~75s 才能落地；若设 60s 会被截断、看不到“平稳降落(landed)”。
 const GLIDER_TIMEOUT = Math.min(300, Math.max(20, Number.parseFloat(process.env.GLIDER_TIMEOUT) || 100));
-// MP4 飞行回放：默认生成（固定机位、覆盖全程）；GLIDER_VIDEO=0 关闭；帧率 / 时长上限可配
-const GLIDER_VIDEO = String(process.env.GLIDER_VIDEO || '1') !== '0';
-const GLIDER_VIDEO_FPS = Math.min(30, Math.max(4, parseInt(process.env.GLIDER_VIDEO_FPS || '10', 10) || 10));
-const GLIDER_VIDEO_MAX = Math.min(600, Math.max(5, Number.parseFloat(process.env.GLIDER_VIDEO_MAX) || 300));
 // 结果保留策略（决策 E-6）：默认 0 = 不自动清理；>0 表示 error 状态结果的可清理天数（供运维脚本使用）
 const GLIDER_RETENTION_DAYS = Math.max(0, parseInt(process.env.GLIDER_RETENTION_DAYS || '0', 10) || 0);
 
@@ -67,6 +63,8 @@ const STATE_LABEL = {
   timedout: '超时结束',
 };
 
+// 结果文件白名单。flight_replay.mp4 仅为兼容历史记录保留（新试飞不再生成视频，
+// 飞行回放改由前端基于逐帧轨迹数据（trace 接口）渲染，见 simulation/glider/RENDER_API.md）。
 const ALLOWED_FILES = new Set(['trajectory3d.png', 'flight_telemetry.png', 'flight_telemetry.csv', 'summary.json', 'flight_replay.mp4']);
 
 // 服务启动时清扫历史遗留的 running 任务，避免僵尸记录永久占满并发上限。
@@ -179,10 +177,9 @@ exports.simulate = async (req, res) => {
       '--timeout', String(GLIDER_TIMEOUT),
       '--backend', GLIDER_BACKEND,
     ];
-    if (GLIDER_VIDEO) {
-      flags.push('--video', '--video-fps', String(GLIDER_VIDEO_FPS),
-                 '--video-max', String(GLIDER_VIDEO_MAX));
-    }
+    // 模拟只产出数据（含 flight_trace.bin 逐帧向量），不生成视频：
+    // 飞行回放由前端消费 trace 接口渲染（GET /api/glider/simulations/:id/trace，
+    // 接入指南：simulation/glider/RENDER_API.md）。
 
     const markError = (msg) => {
       db.prepare(
@@ -330,7 +327,7 @@ exports.file = (req, res) => {
   }
 };
 
-// 生成短期签名播放地址（视频回放流式拖动，避免整段 blob 下载）
+// 生成短期签名播放地址（历史 MP4 记录流式拖动；新试飞不再生成视频，仅为兼容既有记录保留）
 exports.streamUrl = (req, res) => {
   try {
     const { id } = req.params;
@@ -410,7 +407,6 @@ function buildCapabilities(probe) {
     backend: GLIDER_BACKEND,
     detectedBackend: (probe && probe.backend) || '',
     python: PY.mode === 'wsl' ? `wsl:${PY.distro}:${PY.python}` : PY.python,
-    video: GLIDER_VIDEO,
     maxActive: GLIDER_MAX_ACTIVE,
     retentionDays: GLIDER_RETENTION_DAYS,
     probe,

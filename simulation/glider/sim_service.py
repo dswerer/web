@@ -68,16 +68,10 @@ def _probe(probe_outdir):
         "backend": "",
         "numpy": has("numpy"),
         "matplotlib": has("matplotlib"),
-        "ffmpeg": False,
         "novaphy": _novaphy_usable(),
         "outputWritable": False,
     }
     result["backend"] = "novaphy" if result["novaphy"] else ("reference" if result["numpy"] else "")
-    try:
-        import imageio_ffmpeg
-        result["ffmpeg"] = hasattr(imageio_ffmpeg, "get_ffmpeg_exe")
-    except Exception:  # noqa: BLE001
-        result["ffmpeg"] = False
 
     outdir = os.path.abspath(probe_outdir or "output/_probe")
     try:
@@ -90,8 +84,7 @@ def _probe(probe_outdir):
     except Exception:  # noqa: BLE001
         result["outputWritable"] = False
 
-    # ready = 可完成一次参考/真机仿真：需要 numpy + 后端 + matplotlib + 输出目录可写；
-    # ffmpeg 仅影响 MP4 回放（缺失时优雅跳过），不参与 ready 判定。
+    # ready = 可完成一次参考/真机仿真：需要 numpy + 后端 + matplotlib + 输出目录可写。
     result["ready"] = bool(
         result["numpy"] and result["backend"] and result["matplotlib"] and result["outputWritable"]
     )
@@ -162,10 +155,6 @@ def main(argv=None):
                         "（默认开启）：避免把“横滚发散/螺旋下降”误认为尾翼效果；"
                         "--no-tail-assist 可关闭")
     p.add_argument("--backend", default="auto", choices=["auto", "novaphy", "reference"])
-    p.add_argument("--video", action="store_true", help="额外渲染 MP4 飞行回放（需 imageio-ffmpeg）")
-    p.add_argument("--video-fps", type=int, default=12, help="回放帧率")
-    p.add_argument("--video-max", type=float, default=60.0,
-                   help="回放最长覆盖仿真秒数（实际取 min(整段时长, 该值))")
     p.add_argument("--outdir", default="output/sim", help="输出目录")
     args = p.parse_args(argv)
 
@@ -211,37 +200,10 @@ def main(argv=None):
     summary = flight_summary(tele)
 
     files = {"summary": "summary.json", "csv": "flight_telemetry.csv",
-             "telemetry_png": "flight_telemetry.png", "trajectory_png": "trajectory3d.png",
-             "video": "flight_replay.mp4"}
+             "telemetry_png": "flight_telemetry.png", "trajectory_png": "trajectory3d.png"}
     write_csv(tele, os.path.join(outdir, files["csv"]))
     write_plots(tele, outdir, backend.name, {
         "cg": args.cg, "dihedral": args.dihedral, "speed": args.speed})
-
-    # 可选：MP4 飞行回放（依赖 imageio-ffmpeg；缺失/失败时跳过，不影响主结果）
-    if args.video:
-        try:
-            from render import make_video
-            vdur = min(float(tele["t"][-1]), max(5.0, float(args.video_max)))
-            make_video(
-                tele, glider,
-                os.path.join(outdir, files["video"]),
-                fps=max(4, int(args.video_fps)),
-                start=0.0, end=vdur,
-                camera="fixed",
-                cfg_view=dict(spacing=80.0, trail=5000, elev=30, azim=-90,
-                              scale=6.0, ground_color=(0.45, 0.6, 0.45, 0.4),
-                              trail_color=(0.2, 0.45, 0.85, 0.95)),
-                hud=True, figsize=(10.0, 7.5), dpi=100,
-                progress=lambda *a, **k: None)
-            print(f"[video] wrote {files['video']} ({vdur:.0f}s @ {args.video_fps}fps)")
-        except ImportError as exc:
-            print(f"[video] skipped: {exc}", file=sys.stderr)
-            files["video"] = None
-        except Exception as exc:  # noqa: BLE001
-            print(f"[video] failed: {exc}", file=sys.stderr)
-            files["video"] = None
-    else:
-        files["video"] = None
 
     backend.close()
 

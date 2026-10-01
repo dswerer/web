@@ -310,7 +310,7 @@ export default function GliderSimulator() {
           type="success"
           showIcon
           message={`实验环境就绪：${engineInfo.detectedBackend === 'novaphy' ? '真 novaPhy 物理引擎' : (engineInfo.detectedBackend || '参考后端')}`}
-          description={`解释器：${engineInfo.python}${engineInfo.video ? ' · 将生成 MP4 飞行回放' : ' · 已关闭视频回放'}`}
+          description={`解释器：${engineInfo.python} · 逐帧飞行数据经 trace 接口供回放渲染`}
         />
       )}
 
@@ -446,7 +446,7 @@ export default function GliderSimulator() {
               ) : viewing.status === 'running' ? (
                   <Space direction="vertical" style={{ width: '100%', textAlign: 'center' }}>
                     <Spin size="large" />
-                    <Text type="secondary">物理引擎正在计算并渲染全程回放（真 NovaPhy 通常约 1~3 分钟），已等待约 {waitSec} 秒…</Text>
+                    <Text type="secondary">物理引擎正在计算飞行轨迹与结果图表（真 NovaPhy 通常约 1~2 分钟），已等待约 {waitSec} 秒…</Text>
                   </Space>
                 ) : viewing.status === 'error' ? (
                   <Result status="error" title="本次试飞失败" subTitle={viewing.error || '模拟引擎异常'} />
@@ -467,10 +467,21 @@ export default function GliderSimulator() {
                       <Col xs={12} sm={8}><Statistic title="落地高度" value={viewing.result?.alt_end ?? '—'} suffix="m" /></Col>
                     </Row>
 
+                    {/* 历史记录回放（旧版后端生成的 MP4，仅早期记录有）。新试飞不再生成视频：
+                        飞行回放将由前端基于逐帧轨迹数据渲染（three.js 接入中），
+                        数据接口 GET /api/glider/simulations/:id/trace，指南见 simulation/glider/RENDER_API.md */}
                     {img.video && (
                       <Card size="small" title="✈️ 飞行过程回放（视频）" style={{ marginBottom: 16 }}>
-                        <video src={img.video} type="video/mp4" controls autoPlay loop muted playsInline
-                          style={{ width: '100%', borderRadius: 6, background: '#000' }} />
+                        <video
+                          src={img.video}
+                          controls
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          onError={() => message.warning('视频加载失败：请刷新页面或重新打开本条记录')}
+                          style={{ width: '100%', borderRadius: 6, background: '#000' }}
+                        />
                         <Text type="secondary">3D 追逐视角回放：从投放到降落的完整飞行过程。</Text>
                       </Card>
                     )}
