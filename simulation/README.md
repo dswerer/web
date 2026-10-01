@@ -19,21 +19,30 @@ simulation/
 ├─ novaphy-0.4.0-cpu-cp311-linux-x86_64/  ⚠️ 需自行放入，见第 2 节（已 gitignore）
 │
 └─ glider/                                滑翔机气动仿真源码（唯一仿真源码根）
-   ├─ aircraft.py          几何 / 质量 / 气动面参数 + 渲染部件
+   ├─ aircraft.py          几何 / 质量 / 气动面参数 + 渲染部件（parts() 几何接口）
    ├─ aero.py              6DOF 气动模型（面元法、失速/诱导阻力/下洗）——与引擎无关
    ├─ spatial.py           刚体数学（xyzw 四元数 / 旋转 / 积分器）
-   ├─ sim_core.py          控制器 + 飞行循环 + 遥测
+   ├─ flight_trace.py      ★ 最小向量接口：物理仿真 ↔ 渲染的数据契约（npz / ftrc 二进制）
+   ├─ RENDER_API.md        ★ 渲染接入指南（trace 接口 / ftrc 格式 / three.js 示例）
+   ├─ sim_core.py          控制器 + 飞行循环；产出 FlightRun(trace + tele)
    ├─ backend_novaphy.py   novaPhy 刚体求解后端（权威）
    ├─ backend_reference.py 纯 numpy 6DOF 参考后端（对拍影子 / 无 novaPhy 时兜底）
    ├─ sim_service.py       headless 服务入口（平台后端 spawn 的就是它）
-   ├─ render.py            3D 体视渲染（PNG / GIF / MP4）
    ├─ plot_flight.py       2D 遥测曲线 + 3D 航迹图
+   ├─ samples/             样例轨迹文件（联调用，见 glider/RENDER_API.md）
    ├─ requirements.txt     reference 后端所需的 Python 依赖
    └─ output/              运行产物（已 gitignore）
 ```
 
 **双后端设计**：`novaPhy` 只负责"刚体动力学积分"这一段，气动力由 `aero.py` / `sim_core.py`
 计算后注入。两个后端走完全相同的气动与控制器代码，因此行为可比、可对拍。
+
+**接口分层**：物理仿真（`sim_core` + 后端）产出 `FlightRun`——其中 `trace` 为最小向量接口
+（`flight_trace.py`：逐帧 `[t, x, y, z, qx, qy, qz, qw, vx, vy, vz]`），`tele` 为扩展遥测；
+遥测图表（`plot_flight.py`）消费 `tele`，飞行回放由前端（three.js）消费 `trace` 渲染，互不耦合。
+轨迹会以 `flight_trace.npz` / `flight_trace.bin`（ftrc 二进制，Node/浏览器直读）落盘，
+可后置渲染与回放（无需重跑物理仿真）；平台链路会把 ftrc 存入数据库，
+前端经接口 `GET /api/glider/simulations/:id/trace` 读取渲染（接入指南见 `glider/RENDER_API.md`）。
 
 ---
 
@@ -109,7 +118,7 @@ GLIDER_BACKEND=auto
 > ```bash
 > sudo dnf install -y python3.11 python3.11-devel gcc gcc-c++ make
 > sudo python3.11 -m venv /opt/novaphy
-> sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow imageio imageio-ffmpeg
+> sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow
 > sudo /opt/novaphy/bin/pip install simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/*.whl
 > /opt/novaphy/bin/python -c "import novaphy; print('novaPhy OK')"
 > ```
@@ -121,7 +130,7 @@ GLIDER_BACKEND=auto
 
 ```bat
 cd simulation
-docker\run_glider_docker.bat --dihedral 6 --cg 0.1 --speed 36 --video
+docker\run_glider_docker.bat --dihedral 6 --cg 0.1 --speed 36
 ```
 
 `glider/` 会实时挂载进容器，改代码无需重建镜像；产物写在 `simulation/glider/output/`。
@@ -156,9 +165,6 @@ GLIDER_BACKEND=reference      # 强制走参考后端
 | `GLIDER_BACKEND` | `auto` | `auto` / `novaphy` / `reference` |
 | `GLIDER_MAX_ACTIVE` | `2` | 同时运行的模拟任务上限 |
 | `GLIDER_TIMEOUT` | `100` | 单次最长仿真秒数（同时决定子进程预算） |
-| `GLIDER_VIDEO` | `1` | `0` 关闭 MP4 回放生成 |
-| `GLIDER_VIDEO_FPS` | `10` | 回放帧率 |
-| `GLIDER_VIDEO_MAX` | `300` | 回放覆盖时长上限（秒） |
 | `GLIDER_RETENTION_DAYS` | `0` | error 状态结果保留天数；`0` = 不自动清理 |
 | `DISK_WARN_PERCENT` | `85` | `scripts/doctor.sh` 磁盘使用率告警阈值 |
 
@@ -176,7 +182,7 @@ bash scripts/doctor.sh          # 部署前环境检查（含滑翔机引擎可�
 /opt/novaphy/bin/python -c "import novaphy; print('novaPhy OK')"
 cd /mnt/<盘符>/<...>/web/simulation/glider
 /opt/novaphy/bin/python sim_service.py --backend novaphy --dihedral 6 --cg 0.1 \
-    --speed 36 --alt 150 --video --outdir output/smoke
+    --speed 36 --alt 150 --outdir output/smoke
 # 期望：stdout 打印一行 JSON，其中 "backend":"novaphy"、"reason":"landed"
 ```
 
@@ -185,5 +191,6 @@ cd /mnt/<盘符>/<...>/web/simulation/glider
 ## 6. 相关文档
 
 - `glider/README.md` —— 气动模型、参数含义、纯 Python 用法
+- `glider/RENDER_API.md` —— ★ 渲染接入指南（trace 接口 / ftrc 格式 / three.js 示例）
 - 后端接入：`backend/routes/gliders.js`、`backend/controllers/gliderController.js`
 - 前端页面：`frontend/src/pages/glider/Simulator.jsx`、`frontend/src/api/glider.js`
