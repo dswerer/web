@@ -28,8 +28,9 @@ function generateToken(user, secret) {
   );
 }
 
-// AUTH-03：撤销用户所有 Refresh Token（改密 / 重置密码后调用）
+// 改密 / 重置密码同时撤销 Access Token、签名链接与 Refresh Token；由调用方事务保护。
 function revokeAllRefreshTokens(userId) {
+  db.prepare('UPDATE users SET auth_version = auth_version + 1 WHERE id = ?').run(userId);
   db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId);
 }
 
@@ -355,15 +356,21 @@ exports.changePassword = (req, res) => {
     }
 
     const password_hash = bcrypt.hashSync(new_password, 10);
-    db.prepare(
-      'UPDATE users SET password_hash = ?, force_reset_password = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-    ).run(password_hash, userId);
-
-    // AUTH-03：修改密码后撤销该用户所有 Refresh Token，已泄漏的旧 Refresh Token 立即失效
-    revokeAllRefreshTokens(userId);
+    const session = db.transaction(() => {
+      db.prepare(
+        'UPDATE users SET password_hash = ?, force_reset_password = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(password_hash, userId);
+      revokeAllRefreshTokens(userId);
+      const updated = db.prepare('SELECT id, username, real_name, role, school_id, class_id, force_reset_password, auth_version FROM users WHERE id = ?').get(userId);
+      const token = generateToken(updated, req.app.get('jwt_secret'));
+      const refresh_token = issueRefreshToken(userId);
+      const { auth_version, ...publicUser } = updated;
+      return { token, refresh_token, user: publicUser };
+    })();
 
     changePwdAttempts.delete(userId); // 成功后清空该用户尝试计数
-    res.json({ message: '密码修改成功' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ message: '密码修改成功', ...session });
   } catch (err) {
     console.error('修改密码错误:', err);
     res.status(500).json({ error: '操作失败，请稍后重试' });

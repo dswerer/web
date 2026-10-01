@@ -35,6 +35,7 @@ exports.pendingTasks = (req, res) => {
       e.id AS enrollment_id FROM enrollments e JOIN courses c ON c.id=e.course_id
       JOIN lessons l ON l.course_id=c.id JOIN tasks t ON t.lesson_id=l.id
       WHERE e.student_id=? AND e.status='active' AND c.status='published'
+      AND l.status != 'cancelled' AND t.status = 'active'
       AND (
         NOT EXISTS (SELECT 1 FROM works w WHERE w.student_id=e.student_id AND w.task_id=t.id)
         OR (SELECT w.review_status FROM works w

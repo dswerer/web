@@ -80,6 +80,7 @@ test('取消课时同时停止待办、任务、提交和 AI 上下文，保留�
   assert.equal(dashboard.body.revisions.some(w=>w.id===1),false);
   assert.equal(dashboard.body.myCourses[0].total_lessons,1);
   assert.equal((await api('/tasks',{user:'student'})).body.tasks.some(t=>t.id===1),false);
+  assert.equal((await api('/works/pending-tasks',{user:'student'})).body.tasks.some(t=>t.id===1),false);
   assert.equal((await api('/tasks/1',{user:'student'})).status,404);
   assert.equal((await api('/works',{method:'POST',user:'student',body:{title:'违规续交',description:'测试',task_id:1,parent_work_id:1}})).status,409);
   assert.equal((await api('/learning/lessons/1',{user:'student'})).status,404);
@@ -97,6 +98,7 @@ test('取消课时同时停止待办、任务、提交和 AI 上下文，保留�
 test('单独取消任务、撤回课程或移除报名后不能继续提交或出现在待办中', async () => {
   assert.equal((await api('/tasks/3/cancel',{method:'POST',user:'mentor'})).status,200);
   assert.equal((await api('/dashboard',{user:'student'})).body.pendingTasks.some(t=>t.id===3),false);
+  assert.equal((await api('/works/pending-tasks',{user:'student'})).body.tasks.some(t=>t.id===3),false);
   assert.equal((await api('/works',{method:'POST',user:'student',body:{title:'取消任务',description:'测试',task_id:3}})).status,409);
   for (const status of ['draft','archived']) {
     db.prepare('UPDATE courses SET status=? WHERE id=1').run(status);
@@ -239,4 +241,71 @@ test('旧库 AI 用量迁移可重复运行且不改变已有账号和学习数�
     assert.deepEqual(copy.prepare('SELECT * FROM users').get(),original);
     assert.deepEqual(copy.prepare('PRAGMA table_info(ai_usage)').all().map(c=>c.name),db.prepare('PRAGMA table_info(ai_usage)').all().map(c=>c.name));
   } finally {copy.close();}
+});
+
+test('两字中文术语能检索当前课程，停用、跨课程和归属不一致资料不进入上下文',()=>{
+  for (const id of [20,21]) {
+    db.prepare("INSERT INTO resources (id,course_id,resource_type,title,upload_by) VALUES (?,?,'courseware','升力讲义',2)").run(id,id===20?1:2);
+    db.prepare("INSERT INTO ai_documents (id,resource_id,course_id,status) VALUES (?,?,?,'ready')").run(id,id,id===20?1:2);
+    db.prepare("INSERT INTO ai_chunks (document_id,course_id,chunk_index,locator,text) VALUES (?,?,0,'文本',?)")
+      .run(id,id===20?1:2,id===20?'升力与机翼迎角有关。':'升力的跨课程私人资料。');
+  }
+  try {
+    assert.deepEqual(answers.relevantFiles(1,'升力').map(item=>item.id),[20]);
+    db.prepare('UPDATE ai_documents SET enabled=0 WHERE id=20').run();
+    assert.deepEqual(answers.relevantFiles(1,'升力'),[]);
+    db.prepare('UPDATE ai_documents SET enabled=1,course_id=2 WHERE id=20').run();
+    assert.deepEqual(answers.relevantFiles(1,'升力'),[]);
+    db.prepare('UPDATE ai_documents SET course_id=1 WHERE id=20').run();
+    db.prepare('UPDATE resources SET course_id=2 WHERE id=20').run();
+    assert.deepEqual(answers.relevantFiles(1,'升力'),[]);
+  } finally {db.prepare('DELETE FROM resources WHERE id IN (20,21)').run();}
+});
+
+test('上下文预算耗尽后未送给模型的资料不会获得可引用编号',()=>{
+  const sources = [
+    {type:'resource',id:30,title:'长讲义',locator:'文本',text:'x'.repeat(12000)},
+    {type:'resource',id:31,title:'未提供的秘密资料',locator:'文本',text:'不应作为答案来源'},
+  ];
+  const result=answers.buildContext(sources);
+  assert.equal(result.context.length,11500);
+  assert.deepEqual(result.numbered.map(item=>item.id),[30]);
+  assert.doesNotMatch(result.context,/未提供的秘密资料|\[S2\]/);
+});
+
+test('同一文档多个检索片段可正常回答，等待期间停用资料会拒绝交付并记失败',async()=>{
+  db.prepare("INSERT INTO resources (id,course_id,resource_type,title,upload_by) VALUES (30,1,'courseware','升力原理',2)").run();
+  db.prepare("INSERT INTO ai_documents (id,resource_id,course_id,status) VALUES (30,30,1,'ready')").run();
+  for (const [index,text] of ['升力来自机翼周围的气流。','迎角变化也会影响升力。'].entries())
+    db.prepare("INSERT INTO ai_chunks (document_id,course_id,chunk_index,locator,text) VALUES (30,1,?,'文本',?)").run(index,text);
+  try {
+    const course=db.prepare('SELECT * FROM courses WHERE id=1').get();
+    assert.equal(answers.relevantFiles(1,'升力').length,2);
+    const success=await withProvider(()=>({ok:true,json:async()=>providerPayload()}),()=>answers.ask({id:115},course,'升力'));
+    assert.equal(success.origin,'provider');
+    await withProvider(()=>{
+      db.prepare('UPDATE ai_documents SET enabled=0 WHERE id=30').run();
+      return {ok:true,json:async()=>providerPayload()};
+    },async()=>assert.rejects(()=>answers.ask({id:116},course,'升力'),err=>{
+      assert.equal(err.status,409);assert.equal(err.code,'AI_CONTEXT_CHANGED');
+      const row=db.prepare('SELECT * FROM ai_usage WHERE id=?').get(err.requestId);
+      assert.equal(row.status,'failed');assert.equal(row.total_tokens,168);return true;
+    }));
+  } finally {db.prepare('DELETE FROM resources WHERE id=30').run();}
+});
+
+test('供应商返回前取消任务或停用 AI 时不返回旧上下文答案',async()=>{
+  const course=db.prepare('SELECT * FROM courses WHERE id=1').get();
+  try {
+    await withProvider(()=>{
+      db.prepare("UPDATE tasks SET status='cancelled' WHERE id=2").run();
+      return {ok:true,json:async()=>providerPayload()};
+    },()=>assert.rejects(()=>answers.ask({id:117},course,'课程任务'),{status:409,code:'AI_CONTEXT_CHANGED'}));
+  } finally {db.prepare("UPDATE tasks SET status='active' WHERE id=2").run();}
+  try {
+    await withProvider(()=>{
+      settings.saveSettings({enabled:false});
+      return {ok:true,json:async()=>providerPayload()};
+    },()=>assert.rejects(()=>answers.ask({id:118},course,'课程任务'),{status:503,code:'AI_DISABLED'}));
+  } finally {settings.saveSettings({enabled:true});}
 });

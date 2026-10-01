@@ -19,7 +19,10 @@ function checkRate(userId) {
 function textTerms(value) {
   const han = [...String(value).matchAll(/[\p{Script=Han}]{2,}/gu)].flatMap(([word]) => {
     const items = [];
-    for (let i = 0; i + 3 <= word.length; i += 2) items.push(word.slice(i, i + 3));
+    for (let i = 0; i + 2 <= word.length; i++) {
+      if (i + 3 <= word.length) items.push(word.slice(i, i + 3));
+      items.push(word.slice(i, i + 2));
+    }
     return items;
   });
   const english = String(value).toLowerCase().match(/[a-z0-9]{3,}/g) || [];
@@ -29,17 +32,63 @@ function textTerms(value) {
 function relevantFiles(courseId, question) {
   const terms = textTerms(question);
   if (!terms.length) return [];
-  const query = terms.map((term) => `"${term.replace(/"/g, '')}"`).join(' OR ');
-  return db.prepare(`SELECT c.text, c.locator, d.resource_id, r.title,
+  const fullTerms = terms.filter(term => term.length >= 3);
+  const query = fullTerms.map((term) => `"${term.replace(/"/g, '')}"`).join(' OR ');
+  const hits = query ? db.prepare(`SELECT c.text, c.locator, d.resource_id, r.title,
       bm25(ai_chunks_fts) AS score
     FROM ai_chunks_fts
     JOIN ai_chunks c ON c.id = ai_chunks_fts.rowid
     JOIN ai_documents d ON d.id = c.document_id
     JOIN resources r ON r.id = d.resource_id
     WHERE ai_chunks_fts MATCH ? AND c.course_id = ? AND d.enabled = 1 AND d.status = 'ready'
-    ORDER BY score LIMIT 5`).all(query, courseId).map((row) => ({
+      AND d.course_id = c.course_id AND r.course_id = c.course_id
+    ORDER BY score LIMIT 5`).all(query, courseId) : [];
+  const shortTerms = terms.filter(term => /^[\p{Script=Han}]{2}$/u.test(term));
+  // FTS5 trigram 无法检索两字术语（例如“升力”），在已授权课程内补充精确片段匹配。
+  const rows = hits.length || !shortTerms.length ? hits : db.prepare(`
+    SELECT c.text, c.locator, d.resource_id, r.title
+    FROM ai_documents d JOIN ai_chunks c ON c.document_id = d.id
+    JOIN resources r ON r.id = d.resource_id
+    WHERE d.course_id = ? AND c.course_id = d.course_id AND r.course_id = d.course_id
+      AND d.enabled = 1 AND d.status = 'ready'
+      AND (${shortTerms.map(() => 'instr(c.text, ?) > 0').join(' OR ')})
+    ORDER BY d.resource_id, c.chunk_index LIMIT 5`).all(courseId, ...shortTerms);
+  return rows.map((row) => ({
     type: 'resource', id: row.resource_id, title: row.title, locator: row.locator, text: row.text,
   }));
+}
+
+function buildContext(sources) {
+  const numbered = [];
+  const blocks = [];
+  let remaining = 11500;
+  for (const source of sources.filter(item => item.text)) {
+    const ref = `S${numbered.length + 1}`;
+    const prefix = `[${ref}] ${source.title}（${source.locator}）\n`;
+    const separator = blocks.length ? 2 : 0;
+    const available = remaining - separator - prefix.length;
+    if (available < 1) break;
+    const text = source.text.slice(0, available);
+    const block = prefix + text;
+    numbered.push({ ...source, ref });
+    blocks.push(block);
+    remaining -= separator + block.length;
+    if (text.length < source.text.length) break;
+  }
+  return { numbered, context: blocks.join('\n\n') };
+}
+
+function assertContextCurrent(courseId, question, numbered, settings) {
+  const currentSettings = readSettings();
+  if (!currentSettings.enabled) throw Object.assign(new Error('AI 助手已停用，请联系管理员'), { status: 503, code: 'AI_DISABLED' });
+  const currentCourse = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+  const current = currentCourse ? [...structuredSources(currentCourse, question),
+    ...(currentSettings.retrieval_enabled ? relevantFiles(courseId, question) : [])] : [];
+  // 同一资源可能命中多个片段，不能按 resource_id 覆盖后只比较最后一段。
+  const changed = settings.retrieval_enabled !== currentSettings.retrieval_enabled || numbered.some(source =>
+    !current.some(latest => latest.type === source.type && latest.id === source.id &&
+      latest.text === source.text && latest.title === source.title && latest.locator === source.locator));
+  if (changed) throw Object.assign(new Error('课程资料已更新或停用，请重新提问'), { status: 409, code: 'AI_CONTEXT_CHANGED' });
 }
 
 function structuredSources(course, question) {
@@ -76,8 +125,7 @@ async function ask(user, course, question) {
   const structured = structuredSources(course, question);
   const files = settings.retrieval_enabled ? relevantFiles(course.id, question) : [];
   const sources = [...structured, ...files].filter((source) => source.text);
-  const numbered = sources.map((source, index) => ({ ...source, ref: `S${index + 1}` }));
-  const context = numbered.map((source) => `[${source.ref}] ${source.title}（${source.locator}）\n${source.text}`).join('\n\n').slice(0, 11500);
+  const { numbered, context } = buildContext(sources);
   const expansion = {
     strict: '仅回答与当前课程直接相关的问题，补充一般知识时保持简短。',
     balanced: '允许解释与当前课程直接相关的专业原理和实际应用。',
@@ -136,6 +184,7 @@ async function ask(user, course, question) {
     if (!verified.length && parsed.scope === 'core') {
       answer = `当前课程资料中未找到可核对的相关信息。以下仅供一般性学习参考：\n${answer}`;
     }
+    assertContextCurrent(course.id, question, numbered, settings);
     usageService.finish(requestId, { status: 'succeeded', payload, duration: Date.now() - started });
     return { answer, scope: parsed.scope, sources: parsed.scope !== 'unrelated' && settings.show_sources ? verified : [],
       origin: 'provider', request_id: requestId, model: settings.model };
@@ -149,4 +198,4 @@ async function ask(user, course, question) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { ask, relevantFiles, structuredSources, REFUSAL };
+module.exports = { ask, relevantFiles, structuredSources, buildContext, REFUSAL };
