@@ -6,6 +6,7 @@ const { uploadWork, validateUploadedFiles } = require('../middleware/upload');
 
 router.use(requireAuth);
 router.use(requirePasswordChanged);
+router.use(requireRole('admin', 'academic_mentor', 'teacher', 'student'));
 
 router.get('/', controller.list);
 // 作品上传仅限学生本人：教师/导师/管理员不参与上传（代录功能已下线）

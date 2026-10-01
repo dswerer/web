@@ -3,3 +3,7 @@
 numpy>=1.24
 matplotlib>=3.7
 Pillow>=9.0
+# OpenGL 延迟渲染途径（--renderer gl，供 --gl-preview / --gl-live）所需；缺失时该调试通道不可用
+moderngl>=5.10
+trimesh>=4.0        # GLB 模型加载
+pyglm               # 渲染数学（pyGLM）

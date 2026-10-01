@@ -4,6 +4,7 @@ const { buildUserTree } = require('../helpers/userTree');
 const { sanitizeUser } = require('../helpers/userDto');
 const { toFileDto } = require('../helpers/fileDto');
 const { todayInBeijing } = require('../helpers/date');
+const { mentorStudentScope, mentorStudentParams, canViewStudent } = require('../policies/studentPolicy');
 const { canViewArchive, canAddObservation } = require('../helpers/archivePolicy');
 const { canViewWork } = require('../helpers/workPolicy');
 const { courseBelongsToMentor } = require('../helpers/courseScope');
@@ -23,13 +24,6 @@ function loadStudentArchive(studentId, user) {
   // AUTH-01：脱敏，剔除 password_hash 等敏感字段
   const safeStudent = sanitizeUser(student);
 
-  const courses = db.prepare(
-    `SELECT e.id AS enrollment_id, c.title, c.theme, c.grade_level, c.difficulty,
-            e.enrolled_at, e.completed_at
-     FROM enrollments e JOIN courses c ON e.course_id = c.id
-     WHERE e.student_id = ? AND e.status = 'active' ORDER BY e.enrolled_at DESC`
-  ).all(studentId);
-
   // 导师可见的课程报名（含历史），用于过滤评价/反思（决策 D-1；遗留无课程关联数据按 D-2 对导师不可见）
   const mentorEnrollmentIds = user.role === 'academic_mentor'
     ? db.prepare(`
@@ -41,6 +35,13 @@ function loadStudentArchive(studentId, user) {
           ))
       `).all(studentId, user.id, user.id).map((r) => r.id)
     : null;
+
+  const courses = db.prepare(
+    `SELECT e.id AS enrollment_id, c.title, c.theme, c.grade_level, c.difficulty,
+            e.enrolled_at, e.completed_at
+     FROM enrollments e JOIN courses c ON e.course_id = c.id
+     WHERE e.student_id = ? AND e.status = 'active' ORDER BY e.enrolled_at DESC`
+  ).all(studentId).filter((course) => !mentorEnrollmentIds || mentorEnrollmentIds.includes(course.enrollment_id));
 
   const works = db.prepare(`
       SELECT w.*, u.teacher_id AS student_teacher_id, u.school_id AS student_school_id, c.id AS course_id
@@ -71,7 +72,15 @@ function loadStudentArchive(studentId, user) {
 
   // 能力评分口径与作品可见性一致：教师仅统计其可见（approved）作品，其余角色全量
   const ability = db.prepare(`SELECT ROUND(AVG(problem_discovery),1) problem_discovery, ROUND(AVG(solution_design),1) solution_design, ROUND(AVG(hands_on),1) hands_on, ROUND(AVG(data_analysis),1) data_analysis, ROUND(AVG(presentation),1) presentation FROM work_reviews r JOIN works w ON w.id=r.work_id WHERE w.student_id=? AND w.id IN (SELECT value FROM json_each(?))`).get(studentId, JSON.stringify(works.map((w) => w.id)));
-  const growthRecords = db.prepare(`SELECT g.*, u.real_name recorder_name FROM growth_records g LEFT JOIN users u ON u.id=g.recorded_by WHERE g.student_id=? ORDER BY g.created_at DESC`).all(studentId);
+  const visibleWorkIds = new Set(works.map((work) => work.id));
+  const growthRecords = db.prepare(`SELECT g.*, u.real_name recorder_name FROM growth_records g LEFT JOIN users u ON u.id=g.recorded_by WHERE g.student_id=? ORDER BY g.created_at DESC`).all(studentId)
+    .filter((record) => {
+      if (user.role === 'teacher' && record.work_id) return visibleWorkIds.has(record.work_id);
+      if (user.role === 'academic_mentor') {
+        return record.work_id ? visibleWorkIds.has(record.work_id) : record.recorded_by === user.id;
+      }
+      return true;
+    });
   if (!growthRecords.length) {
     works.forEach((work) => growthRecords.push({ event_type: 'system', description: `提交作品《${work.title}》`, created_at: work.created_at }));
     growthRecords.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -94,11 +103,20 @@ exports.showExport = (req, res) => {
     const tree = buildUserTree({
       roles: ['student'],
       search: req.query.search || '',
-      schoolId: isTeacher(user.role) ? user.school_id : null,
-      mentorId: user.role === 'academic_mentor' ? user.id : null
+      teacherId: isTeacher(user.role) ? user.id : null,
+      mentorId: user.role === 'academic_mentor' ? user.id : null,
     });
 
-    const courses = db.prepare('SELECT id, title FROM courses ORDER BY title').all();
+    const courses = user.role === 'academic_mentor'
+      ? db.prepare(`SELECT id, title FROM courses c WHERE c.created_by = ? OR EXISTS (
+          SELECT 1 FROM lessons l WHERE l.course_id = c.id AND l.instructor_id = ?
+        ) ORDER BY title`).all(user.id, user.id)
+      : isTeacher(user.role)
+        ? db.prepare(`SELECT DISTINCT c.id, c.title FROM courses c
+            JOIN enrollments e ON e.course_id = c.id
+            JOIN users u ON u.id = e.student_id
+            WHERE u.teacher_id = ? ORDER BY c.title`).all(user.id)
+      : db.prepare('SELECT id, title FROM courses ORDER BY title').all();
 
     res.json({ title: '成长档案导出', tree, courses, filters: req.query });
   } catch (err) {
@@ -121,6 +139,9 @@ exports.generate = (req, res) => {
       return res.status(400).json({ error: '无权查看成长档案' });
     }
 
+    if (user.role === 'academic_mentor' && !canViewStudent(user, { id: Number(studentId) })) {
+      return res.status(403).json({ error: '只能查看自己课程相关学生档案' });
+    }
     const archive = loadStudentArchive(studentId, user);
 
     if (!archive) {
@@ -148,6 +169,9 @@ exports.addGrowthRecord = (req, res) => {
     const description = (req.body.description || '').trim();
     const student = db.prepare("SELECT id, school_id, role FROM users WHERE id=? AND role='student'").get(req.body.student_id);
     if (!student || !description) return res.status(400).json({ error: '请选择学生并填写记录内容' });
+    if (req.user.role === 'academic_mentor' && !canViewStudent(req.user, student)) {
+      return res.status(403).json({ error: '只能为自己课程相关学生添加成长记录' });
+    }
     if (!canAddObservation(req.user, student)) return res.status(403).json({ error: '无权记录该学生' });
     db.prepare("INSERT INTO growth_records (student_id,event_type,description,recorded_by) VALUES (?,'teacher',?,?)").run(student.id, description, req.user.id);
     res.json({ message: '成长记录已添加' });
@@ -162,18 +186,6 @@ exports.generateBatch = (req, res) => {
 
     const { school_id, class_id, search } = req.query;
     const user = req.user;
-    if (isTeacher(user.role)) {
-      let allowed = false;
-      if (class_id) {
-        const cls = db.prepare('SELECT school_id FROM classes WHERE id = ?').get(class_id);
-        allowed = !!cls && cls.school_id === user.school_id;
-      } else if (school_id) {
-        allowed = Number(school_id) === user.school_id;
-      }
-      if (!allowed) {
-        return res.status(400).json({ error: '教师只能导出本校学生档案' });
-      }
-    }
     if (!school_id && !class_id) {
       return res.status(400).json({ error: '请选择学校或班级' });
     }
@@ -190,6 +202,14 @@ exports.generateBatch = (req, res) => {
     if (search) {
       sql += ' AND (real_name LIKE ? OR username LIKE ?)';
       params.push(`%${search}%`, `%${search}%`);
+    }
+    if (isTeacher(user.role)) {
+      sql += ' AND teacher_id = ?';
+      params.push(user.id);
+    }
+    if (user.role === 'academic_mentor') {
+      sql += ` AND ${mentorStudentScope('users.id')}`;
+      params.push(...mentorStudentParams(user.id));
     }
     sql += ' ORDER BY real_name';
 

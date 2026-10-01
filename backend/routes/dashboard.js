@@ -19,7 +19,12 @@ router.post('/schools/:id/classes', requireRole('admin'), controller.addClass);
 router.post('/schools/:id/classes/:classId/delete', requireRole('admin'), controller.deleteClass);
 
 // AI 助教
-router.get('/ai/courses', aiController.getCourses);
-router.post('/ai/ask', aiController.ask);
+router.get('/ai/courses', requireRole('admin', 'academic_mentor', 'student'), aiController.getCourses);
+router.post('/ai/ask', requireRole('admin', 'academic_mentor', 'student'), aiController.ask);
+router.get('/ai/settings', requireRole('admin'), aiController.getSettings);
+router.put('/ai/settings', requireRole('admin'), aiController.saveSettings);
+router.get('/ai/courses/:courseId/documents', requireRole('admin', 'academic_mentor'), aiController.getDocuments);
+router.post('/ai/resources/:resourceId/index', requireRole('admin', 'academic_mentor'), aiController.indexResource);
+router.patch('/ai/documents/:documentId', requireRole('admin', 'academic_mentor'), aiController.setDocumentEnabled);
 
 module.exports = router;

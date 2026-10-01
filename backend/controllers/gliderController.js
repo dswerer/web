@@ -17,6 +17,8 @@ const { canViewSimulation } = require('../helpers/gliderPolicy');
 //     （/mnt/d 与 D:\ 是同一物理盘：Node 用 Windows 路径读写结果，Python 用 /mnt/d 路径写结果，天然互通）
 //   · 无 WSL 的 Windows 兜底：GLIDER_PYTHON=python + GLIDER_BACKEND=reference（纯 numpy，行为等价）
 // GLIDER_BACKEND  auto | novaphy | reference（默认 auto：可加载 novaPhy 则优先 novaPhy）
+// GLIDER_RENDERER  mpl | gl（默认 mpl；gl = GLB 模型 + OpenGL 延迟渲染，供 --gl-preview / --gl-live；
+//                  需 moderngl/trimesh/pyglm 与可用 GL 上下文，缺失时仅该调试通道不可用）
 // GLIDER_MAX_ACTIVE  并发上限（默认 2）
 // ------------------------------------------------------------------
 function parsePython() {
@@ -38,6 +40,7 @@ function parsePython() {
 
 const PY = parsePython();
 const GLIDER_BACKEND = process.env.GLIDER_BACKEND || 'auto';
+const GLIDER_RENDERER = process.env.GLIDER_RENDERER || 'mpl';
 const GLIDER_DIR = path.resolve(__dirname, '..', '..', 'simulation', 'glider');
 const GLIDER_MAX_ACTIVE = Math.max(1, parseInt(process.env.GLIDER_MAX_ACTIVE || '2', 10) || 2);
 const GLIDER_ALT = 150;            // 投放高度固定 (m)，避免变量过多
@@ -190,6 +193,10 @@ exports.simulate = async (req, res) => {
     // 模拟只产出数据（含 flight_trace.bin 逐帧向量），不生成视频：
     // 飞行回放由前端消费 trace 接口渲染（GET /api/glider/simulations/:id/trace，
     // 接入指南：simulation/glider/RENDER_API.md）。
+    if (GLIDER_RENDERER === 'gl') {
+      // 仅 gl 时显式推入（mpl 保持原 spawn 参数不变；GL 依赖缺失仅影响预览/实时窗口，不影响仿真）
+      flags.push('--renderer', 'gl');
+    }
 
     const markError = (msg) => {
       db.prepare(
@@ -499,6 +506,7 @@ function buildCapabilities(probe) {
   return {
     ready: computeReady(probe, GLIDER_BACKEND),
     backend: GLIDER_BACKEND,
+    renderer: GLIDER_RENDERER,
     detectedBackend: (probe && probe.backend) || '',
     python: PY.mode === 'wsl' ? `wsl:${PY.distro}:${PY.python}` : PY.python,
     maxActive: GLIDER_MAX_ACTIVE,

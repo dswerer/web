@@ -53,7 +53,7 @@ const ROLE_PATH_RULES = {
   ],
   media: [
     /^\/dashboard$/,
-    /^\/courses(?:\/\d+)?$/,
+    /^\/courses$/,
   ],
 };
 

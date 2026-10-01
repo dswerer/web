@@ -70,6 +70,22 @@ after(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('旧进度接口只保存播放位置，不能由客户端伪造课时完成', async () => {
+  const update = await api('/courses/1/progress', {
+    method: 'POST', token: tokens.student, body: { lesson_id: 1, progress: 100, last_position: 12 },
+  });
+  assert.equal(update.status, 200);
+  assert.equal(update.body.progress, 0);
+  assert.deepEqual(db.prepare('SELECT progress, last_position, completed_at FROM lesson_progress WHERE student_id = 3 AND lesson_id = 1').get(),
+    { progress: 0, last_position: 12, completed_at: null });
+  assert.equal((await api('/courses/1/progress', {
+    method: 'POST', token: tokens.outsider, body: { lesson_id: 1, progress: 100 },
+  })).status, 403);
+  assert.equal((await api('/courses/2/progress', {
+    method: 'POST', token: tokens.student, body: { lesson_id: 2, progress: 100 },
+  })).status, 403);
+});
+
 test('学生学习包校验报名和发布状态，且不泄漏答案', async () => {
   assert.equal((await api('/learning/lessons/1', { token: tokens.outsider })).status, 404);
   assert.equal((await api('/learning/lessons/2', { token: tokens.student })).status, 404);

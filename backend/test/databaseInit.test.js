@@ -68,6 +68,30 @@ test('已有库拒绝初始化，显式重置后仍可启动', (t) => {
   succeeds(run(dbPath, ['-e', "require('./config/database').close()"]));
 });
 
+test('旧版 003 学生状态迁移记录升级后不重复添加列并保留账号', (t) => {
+  const dbPath = fixture(t);
+  succeeds(run(dbPath, ['database/init.js']));
+  const db = new Database(dbPath);
+  db.exec(`
+    DROP INDEX idx_growth_records_work;
+    ALTER TABLE growth_records DROP COLUMN work_id;
+    DELETE FROM schema_migrations WHERE version = 8;
+    UPDATE schema_migrations SET name = '003_student_lifecycle.sql' WHERE version = 3;
+  `);
+  const before = db.prepare('SELECT id, username, password_hash FROM users ORDER BY id').all();
+  db.close();
+
+  succeeds(run(dbPath, ['-e', "require('./config/database').close()"]));
+  const upgraded = new Database(dbPath, { readonly: true });
+  assert.deepEqual(upgraded.prepare('SELECT id, username, password_hash FROM users ORDER BY id').all(), before);
+  assert.deepEqual(upgraded.prepare('SELECT version, name FROM schema_migrations WHERE version IN (3, 8) ORDER BY version').all(), [
+    { version: 3, name: '003_archive_timeline.sql' },
+    { version: 8, name: '008_student_lifecycle.sql' },
+  ]);
+  assert.ok(upgraded.prepare('PRAGMA table_info(growth_records)').all().some((column) => column.name === 'work_id'));
+  upgraded.close();
+});
+
 test('生产环境禁止测试初始化，包括强制重置', (t) => {
   const dbPath = fixture(t);
   assert.equal(run(dbPath, ['database/init.js', '--force'], { NODE_ENV: 'production' }).status, 1);

@@ -7,8 +7,6 @@ import { useAuth } from '../../store/AuthContext';
 
 const { Title, Text } = Typography;
 
-const canManage = (role) => ['admin', 'academic_mentor'].includes(role);
-const canImport = (role) => ['admin', 'academic_mentor'].includes(role);
 
 const GRADE_LABELS = { primary: '小学', junior: '初中', senior: '高中' };
 const DIFFICULTY_LABELS = { basic: '基础', advanced: '进阶', challenge: '挑战' };
@@ -325,15 +323,15 @@ export default function CourseDetail() {
       key: 'lessons', label: '课时安排',
       children: (
         <div>
-          {canManage(user?.role) && (
+          {course.can_manage && (
             <Button type="dashed" icon={<PlusOutlined />} onClick={() => setLessonModal(true)} style={{ marginBottom: 16 }}>添加课时</Button>
           )}
           {lessons.map((lesson) => (
             <Card key={lesson.id} size="small" style={{ marginBottom: 8 }} title={lesson.title}
               extra={<Space>
                 {isEnrolled && <Button type="primary" size="small" onClick={() => navigate(`/courses/${course.id}/lessons/${lesson.id}/learn`)}>进入课后学习</Button>}
-                {canManage(user?.role) && <Button type="primary" size="small" onClick={() => navigate(`/courses/${course.id}/lessons/${lesson.id}/content`)}>设置知识卡片与习题</Button>}
-                {canManage(user?.role) && <Button size="small" onClick={() => { setActiveLesson(lesson); setTaskModal(true); }}>添加任务</Button>}
+                {course.can_manage && <Button type="primary" size="small" onClick={() => navigate(`/courses/${course.id}/lessons/${lesson.id}/content`)}>设置知识卡片与习题</Button>}
+                {course.can_manage && <Button size="small" onClick={() => { setActiveLesson(lesson); setTaskModal(true); }}>添加任务</Button>}
               </Space>}
             >
               {lesson.description && <p>{lesson.description}</p>}
@@ -353,7 +351,7 @@ export default function CourseDetail() {
       key: 'replays', label: '课程回放',
       children: (
         <div>
-          {canManage(user?.role) && (
+          {course.can_manage && (
             <Button type="dashed" icon={<UploadOutlined />} onClick={() => openReplayModal()} style={{ marginBottom: 16 }}>
               上传回放
             </Button>
@@ -363,7 +361,7 @@ export default function CourseDetail() {
             <Typography.Text type="secondary">暂无课程回放</Typography.Text>
           ) : replays.map((replay) => (
             <Card key={replay.id} size="small" style={{ marginBottom: 8 }}
-              extra={canManage(user?.role) && (
+              extra={course.can_manage && (
                 <Space size={4}>
                   <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openReplayModal(replay)}>编辑</Button>
                   <Popconfirm title="确定删除该回放？" okText="删除" cancelText="取消" onConfirm={() => handleDeleteReplay(replay.id)}>
@@ -387,10 +385,11 @@ export default function CourseDetail() {
       key: 'resources', label: '课程资源',
       children: (
         <div>
-          {canManage(user?.role) && (
-            <Button type="dashed" icon={<UploadOutlined />} onClick={openResourceModal} style={{ marginBottom: 16 }}>
-              上传资料
-            </Button>
+          {course.can_manage && (
+            <Space style={{ marginBottom: 16 }}>
+              <Button type="dashed" icon={<UploadOutlined />} onClick={openResourceModal}>上传资料</Button>
+              <Button onClick={() => navigate(`/courses/${id}/ai-knowledge`)}>管理 AI 知识库</Button>
+            </Space>
           )}
           {resources.length === 0 ? (
             <Typography.Text type="secondary">暂无课程资源</Typography.Text>
@@ -410,16 +409,16 @@ export default function CourseDetail() {
     },
   ];
 
-  // 选课学生页签：执行导师/教师/管理员可见（学生由统一导入，日常不可退课）
-  if (canImport(user?.role)) {
+  // 管理者可查看报名；归档课程仍可查看历史，但不可继续导入。
+  if (course.can_manage) {
     tabItems.push({
       key: 'students',
       label: `选课学生 (${enrollments.length})`,
       children: (
         <div>
-          <Button type="dashed" icon={<PlusOutlined />} onClick={openImportModal} style={{ marginBottom: 16 }}>
+          {course.can_enroll && <Button type="dashed" icon={<PlusOutlined />} onClick={openImportModal} style={{ marginBottom: 16 }}>
             导入学生
-          </Button>
+          </Button>}
           <Table dataSource={enrollments} rowKey="id" pagination={false} size="small"
             columns={[
               { title: '姓名', dataIndex: 'student_name' },
@@ -444,15 +443,15 @@ export default function CourseDetail() {
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/courses')}>返回</Button>
         <Title level={4} style={{ margin: 0 }}>{course.title}</Title>
-        {canManage(user?.role) && course.status !== 'published' && (
+        {course.can_manage && course.status !== 'published' && (
           <Button type="primary" size="small" onClick={() => handleChangeStatus('published')}>发布课程</Button>
         )}
-        {canManage(user?.role) && course.status === 'published' && (
+        {course.can_manage && course.status === 'published' && (
           <Button size="small" onClick={() => handleChangeStatus('draft')}>撤回为草稿</Button>
         )}
         {isStudent && isEnrolled && <Tag color="green">已选修</Tag>}
         {isStudent && isEnrolled && firstLearningLesson && <Button type="primary" onClick={() => navigate(`/courses/${id}/lessons/${firstLearningLesson.id}/learn`)}>进入课时学习</Button>}
-        {isStudent && isEnrolled && <Button type="link" onClick={() => navigate('/dashboard/ai')}>灵境小智</Button>}
+        {isStudent && isEnrolled && <Button type="link" onClick={() => navigate(`/dashboard/ai?course_id=${id}`)}>灵境小智</Button>}
       </Space>
 
       {isStudent ? (
@@ -487,7 +486,7 @@ export default function CourseDetail() {
                 <div style={{ marginTop: 12 }}>
                   <Space wrap>
                     <Button type="primary" disabled={!firstLearningLesson} onClick={() => navigate(`/courses/${id}/lessons/${firstLearningLesson.id}/learn`)}>继续课后学习</Button>
-                    <Button onClick={() => navigate('/dashboard/ai')}>灵境小智</Button>
+                    <Button onClick={() => navigate(`/dashboard/ai?course_id=${id}`)}>灵境小智</Button>
                   </Space>
                 </div>
               </div>
@@ -587,7 +586,7 @@ export default function CourseDetail() {
           </Form.Item>
           <Form.Item label="文件" required>
             <Upload
-              accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.pdf,.doc,.docx,.ppt,.pptx,.zip,.obj,.glb,.gltf,.stl"
+              accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.pdf,.doc,.docx,.ppt,.pptx,.txt,.zip,.obj,.glb,.gltf,.stl"
               maxCount={1}
               beforeUpload={(file) => { setResourceFile(file); return false; }}
               onRemove={() => setResourceFile(null)}
@@ -595,6 +594,7 @@ export default function CourseDetail() {
             >
               <Button icon={<UploadOutlined />}>选择文件（≤50MB）</Button>
             </Upload>
+            <Typography.Text type="secondary">AI 知识库仅解析可提取文字的 PDF、DOCX、PPTX、TXT。旧版 DOC/PPT 需先转换；扫描版 PDF 需先 OCR。</Typography.Text>
           </Form.Item>
         </Form>
       </Modal>

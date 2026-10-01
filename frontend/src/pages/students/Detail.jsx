@@ -39,6 +39,8 @@ export default function StudentDetail() {
 
   const load = () => {
     setLoading(true);
+    setStudent(null);
+    setDetail({});
     studentAPI.detail(id).then((res) => {
       setDetail(res);
       if (res.user) setStudent(res.user);

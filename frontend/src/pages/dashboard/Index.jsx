@@ -46,9 +46,9 @@ export default function Dashboard() {
       {/* 统计卡片 */}
       {stats && (
         <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col xs={12} sm={6}><Card><Statistic title="加盟学校" value={stats.schoolCount} prefix={<BankOutlined />} /></Card></Col>
-          <Col xs={12} sm={6}><Card><Statistic title="平台用户" value={stats.userCount} prefix={<TeamOutlined />} /></Card></Col>
-          <Col xs={12} sm={6}><Card><Statistic title="在线课程" value={stats.courseCount} prefix={<BookOutlined />} /></Card></Col>
+          <Col xs={12} sm={6}><Card><Statistic title={user?.role === 'admin' ? '加盟学校' : '相关学校'} value={stats.schoolCount} prefix={<BankOutlined />} /></Card></Col>
+          <Col xs={12} sm={6}><Card><Statistic title={user?.role === 'admin' ? '平台用户' : '相关学生'} value={stats.userCount} prefix={<TeamOutlined />} /></Card></Col>
+          <Col xs={12} sm={6}><Card><Statistic title={user?.role === 'admin' ? '在线课程' : '负责课程'} value={stats.courseCount} prefix={<BookOutlined />} /></Card></Col>
           <Col xs={12} sm={6}><Card><Statistic title="学生作品" value={stats.workCount} prefix={<FileTextOutlined />} /></Card></Col>
         </Row>
       )}
