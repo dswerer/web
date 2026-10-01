@@ -580,6 +580,10 @@ CREATE TABLE IF NOT EXISTS glider_simulations (
   cg_x REAL NOT NULL DEFAULT 0,
   speed REAL NOT NULL DEFAULT 36,
   alt REAL NOT NULL DEFAULT 150,
+  wing_area REAL NOT NULL DEFAULT 17.5,   -- 机翼面积 (m²)，相对基准 17.5 等比缩放
+  mass REAL NOT NULL DEFAULT 420,         -- 整机质量 (kg)，课程组“重力”参数
+  elevator_deg REAL NOT NULL DEFAULT 0,   -- 水平尾翼偏角 (°)，>0 上抬（抬头）
+  rudder_deg REAL NOT NULL DEFAULT 0,     -- 垂直尾翼偏角 (°)，>0 机头右偏
   status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','success','error')),
   state TEXT,
   glide_time REAL,

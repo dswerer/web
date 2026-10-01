@@ -3,6 +3,7 @@
 
 复用 glider_sim 的气动模型与积分后端（aircraft / aero / sim_core），学生提交
   上反角(°)  +  重心前移量(m)  +  初始投放速度(m/s)
+  +  机翼面积(平方米)  +  整机质量(kg)  +  平尾偏角(°)  +  垂尾偏角(°)
 后由平台后端 spawn 本脚本，在 --outdir 输出：
   summary.json          指标摘要（含 reason / glide_time / 距离 / 下沉率 / L/D 等）
   flight_telemetry.csv  全量遥测
@@ -24,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import platform
 import sys
@@ -143,10 +145,22 @@ def main(argv=None):
                    help="重心相对默认沿机体前移量 (m)，>0 靠前（静稳↑/时长短），<0 靠后（易失稳）")
     p.add_argument("--speed", type=float, default=36.0, help="初始投放速度 (m/s)")
     p.add_argument("--alt", type=float, default=150.0, help="投放高度 (m)")
+    p.add_argument("--wing-area", type=float, default=17.5,
+                   help="主翼总面积（平方米），相对基准 17.5 等比缩放（翼展/弦长同步，展弦比不变）")
+    p.add_argument("--mass", type=float, default=420.0,
+                   help="整机质量 (kg)，课程组“重力”参数（更重→飞得更快更沉）")
+    p.add_argument("--elevator", type=float, default=0.0,
+                   help="水平尾翼偏角 (°)：>0 上抬（抬头方向）；≠0 时进入手动尾翼模式（脱离自动保速）")
+    p.add_argument("--rudder", type=float, default=0.0,
+                   help="垂直尾翼偏角 (°)：>0 机头向右偏航")
     p.add_argument("--timeout", type=float, default=90.0, help="最长仿真时间 (s)")
     p.add_argument("--autolevel", action=argparse.BooleanOptionalAction, default=False,
                    help="默认关闭横滚/偏航自动保持：考察上反角与重心对被动稳定性的真实影响；"
                         "--autolevel 可开启让飞机更易保持平飞")
+    p.add_argument("--tail-assist", action=argparse.BooleanOptionalAction, default=True,
+                   help="手动尾翼模式（升降舵/方向舵偏角≠0）下保留横滚回中与偏航阻尼辅助"
+                        "（默认开启）：避免把“横滚发散/螺旋下降”误认为尾翼效果；"
+                        "--no-tail-assist 可关闭")
     p.add_argument("--backend", default="auto", choices=["auto", "novaphy", "reference"])
     p.add_argument("--video", action="store_true", help="额外渲染 MP4 飞行回放（需 imageio-ffmpeg）")
     p.add_argument("--video-fps", type=int, default=12, help="回放帧率")
@@ -165,19 +179,31 @@ def main(argv=None):
     outdir = os.path.abspath(args.outdir)
     os.makedirs(outdir, exist_ok=True)
 
-    glider = Glider(dihedral_deg=float(args.dihedral), cg_x=float(args.cg))
+    glider = Glider(dihedral_deg=float(args.dihedral), cg_x=float(args.cg),
+                    wing_S=float(args.wing_area), mass=float(args.mass))
     cfg = SimConfig()
     cfg.start_alt = float(args.alt)
     cfg.start_speed = float(args.speed)
-    cfg.V_ref = 31.0
+    # 目标巡航速度随翼载联动（教学口径）：V_ref ∝ sqrt(质量/机翼面积)，
+    # 使“面积大→可慢飞、下沉慢”“质量大→飞得快、下沉快”符合直觉；默认参数下仍为 31 m/s。
+    cfg.V_ref = 31.0 * math.sqrt((float(args.mass) / 420.0) * (17.5 / float(args.wing_area)))
+    cfg.elevator_deg = float(args.elevator)
+    cfg.rudder_deg = float(args.rudder)
     cfg.sim_time = float(args.timeout)
     cfg.maneuver = "straight"
+
+    # 手动尾翼模式：学生设定了升降舵/方向舵偏角（非 0）——升降舵脱离保速、按固定偏角配平
+    manual_tail = abs(cfg.elevator_deg) > 1e-9 or abs(cfg.rudder_deg) > 1e-9
+
     if not args.autolevel:
-        # 关闭主动横滚/偏航保持，让学生观察布局参数（上反角/重心）产生的被动稳定效果
-        cfg.gain_roll = 0.0
-        cfg.gain_roll_rate = 0.0
-        cfg.gain_beta = 0.0
-        cfg.gain_yaw_rate = 0.0
+        # 默认关闭主动横滚/偏航保持：让学生观察布局参数（上反角/重心）产生的被动稳定效果。
+        # 例外：手动尾翼模式默认保留姿态辅助（横滚回中/偏航阻尼），否则“尾翼影响俯仰/偏航”
+        # 会被横滚发散与螺旋下降掩盖（实测：方向舵 +8° 无辅助→25s 螺旋坠地，有辅助→72s 平稳右转）。
+        if not (manual_tail and args.tail_assist):
+            cfg.gain_roll = 0.0
+            cfg.gain_roll_rate = 0.0
+            cfg.gain_beta = 0.0
+            cfg.gain_yaw_rate = 0.0
 
     BackendCls = _pick_backend(args.backend)
     backend = BackendCls(glider)
@@ -226,6 +252,11 @@ def main(argv=None):
             "speed": round(float(args.speed), 3),
             "alt": round(float(args.alt), 3),
             "autolevel": args.autolevel,
+            "wing_area": round(float(args.wing_area), 3),
+            "mass": round(float(args.mass), 3),
+            "elevator_deg": round(float(args.elevator), 3),
+            "rudder_deg": round(float(args.rudder), 3),
+            "v_ref": round(float(cfg.V_ref), 2),
         },
         "backend": backend.name,
         "reason": summary.get("reason", "ok"),

@@ -61,6 +61,7 @@ function toWslPath(p) {
 const STATE_LABEL = {
   ok: '正常滑翔',
   landed: '成功着陆',
+  hard_landing: '重着陆（触地过快）',
   'crashed(roll)': '横滚失控坠毁',
   'stalled/slow': '失速下坠',
   timedout: '超时结束',
@@ -93,6 +94,10 @@ function toDto(row) {
     cg_x: row.cg_x,
     speed: row.speed,
     alt: row.alt,
+    wing_area: row.wing_area,               // 机翼面积 (m²)
+    mass: row.mass,                         // 整机质量 (kg)
+    elevator_deg: row.elevator_deg,         // 水平尾翼偏角 (°)
+    rudder_deg: row.rudder_deg,             // 垂直尾翼偏角 (°)
     status: row.status,                 // running / success / error
     state: row.state,                   // ok / landed / crashed(roll) / stalled/slow / timedout
     state_label: (row.state && STATE_LABEL[row.state]) || row.state || null,
@@ -144,11 +149,18 @@ exports.simulate = async (req, res) => {
     const dihedral_deg = clampNum(req.body.dihedral_deg, -30, 30, 5);
     const cg_x = clampNum(req.body.cg_x, -2, 2, 0);
     const speed = clampNum(req.body.speed, 15, 60, 36);
+    // 课程组扩展参数（范围留余量；前端另有更窄的 UI 范围）
+    const wing_area = clampNum(req.body.wing_area, 8, 32, 17.5);
+    const mass = clampNum(req.body.mass, 200, 800, 420);
+    const elevator_deg = clampNum(req.body.elevator_deg, -18, 18, 0);
+    const rudder_deg = clampNum(req.body.rudder_deg, -18, 18, 0);
 
     const info = db.prepare(
-      `INSERT INTO glider_simulations (student_id, dihedral_deg, cg_x, speed, alt, status, course_id, lesson_id)
-       VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`
-    ).run(req.user.id, dihedral_deg, cg_x, speed, GLIDER_ALT, courseId, lessonId);
+      `INSERT INTO glider_simulations
+         (student_id, dihedral_deg, cg_x, speed, alt, wing_area, mass, elevator_deg, rudder_deg, status, course_id, lesson_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`
+    ).run(req.user.id, dihedral_deg, cg_x, speed, GLIDER_ALT,
+          wing_area, mass, elevator_deg, rudder_deg, courseId, lessonId);
     const id = info.lastInsertRowid;
 
     const simDir = path.join(UPLOAD_ROOT, 'glider', String(id));
@@ -160,6 +172,10 @@ exports.simulate = async (req, res) => {
       '--cg', String(cg_x),
       '--speed', String(speed),
       '--alt', String(GLIDER_ALT),
+      '--wing-area', String(wing_area),
+      '--mass', String(mass),
+      '--elevator', String(elevator_deg),
+      '--rudder', String(rudder_deg),
       '--timeout', String(GLIDER_TIMEOUT),
       '--backend', GLIDER_BACKEND,
     ];
@@ -219,6 +235,7 @@ exports.simulate = async (req, res) => {
         const summaryFile = path.join(simDir, 'summary.json');
         if (!fs.existsSync(summaryFile)) throw new Error('未生成 summary.json');
         const result = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+
         db.prepare(
           `UPDATE glider_simulations
              SET status='success', state=?, glide_time=?, summary_json=?, updated_at=CURRENT_TIMESTAMP

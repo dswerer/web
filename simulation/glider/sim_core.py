@@ -51,17 +51,31 @@ class SimConfig:
 
         self.def_limit = 0.9
         self.stop_alt = 1.5           # 触地（视为着陆）
+        self.hard_landing_sink = 6.0  # 触地时下沉率阈值 (m/s)：超过视为“重着陆”（俯冲砸地）
         self.max_roll_rad = np.radians(75.0)   # 超过视为失控
+
+        # ---- 尾翼（学生设定偏角，°）----
+        # 语义：elevator_deg > 0 = 平尾上抬（拉杆/抬头方向）；rudder_deg > 0 = 机头右偏。
+        # 升降舵非 0 时进入“手动尾翼模式”：脱离空速保持回路（固定配平 + 俯仰阻尼），
+        # 让“上下翻尾翼 → 俯仰/速度”的后果直接可见（含失速、俯冲等失败案例）。
+        self.elevator_deg = 0.0
+        self.rudder_deg = 0.0
+        self.tail_deg_to_def = 1.0 / 30.0   # 舵面角度(°) -> 无量纲 def 的线性换算
 
 
 class FlightController:
-    """空速保持 + 机翼水平 + 协调（去侧滑）。
+    """空速保持 + 机翼水平 + 协调（去侧滑）；支持“手动尾翼”模式。
 
     物理符号说明（已在 aero 中按“def>0 增大该面迎角”定义）：
       - 升降舵 def>0：平尾升力↑(尾上抬) -> 低头力矩（推杆）
       - 副翼   def>0：右翼(starboard)迎角↑ -> 左横滚
-      - 方向舵 def>0：垂尾向右翼方向出力 -> 偏航
+      - 方向舵 def>0：机头右偏（符号经数值验证）
     控制器使用与上述一致的物理符号；具体极性与负反馈方向经数值验证后取定。
+
+    尾翼模式（SimConfig.elevator_deg / rudder_deg，学生参数）：
+      - 升降舵 ≈ 0（默认）：自动空速保持（既有行为）；
+      - 升降舵 ≠ 0：手动模式 = 学生固定偏角 + 俯仰阻尼（不再保速）；
+      - 方向舵：学生固定偏角直接叠加（默认 0 时不改变原有行为）。
     """
 
     def __init__(self, cfg: SimConfig):
@@ -97,15 +111,22 @@ class FlightController:
                 bank_cmd = np.radians(cfg.bank_cmd_deg) * np.sin(
                     2.0 * np.pi * t / max(cfg.sine_period, 1e-3))
 
-        # 俯仰通道：def>0=推杆(低头)；V 高->抬头减速->def<0
-        elevator = -cfg.gain_speed * (V - cfg.V_ref) - cfg.gain_dspeed * dV
-        elevator += cfg.gain_pitch * (0.0 - pitch)
-        elevator += cfg.gain_pitch_damp * q          # q>0 抬头 -> 加推杆阻尼
+        # ---- 升降舵：自动保速 / 手动尾翼两种模式 ----
+        if abs(cfg.elevator_deg) > 1e-9:
+            # 手动尾翼模式：学生固定偏角（elevator_deg>0=上抬→抬头）＋俯仰阻尼
+            elevator = (-cfg.elevator_deg * cfg.tail_deg_to_def
+                        + cfg.gain_pitch_damp * q)
+        else:
+            # 俯仰通道（自动保速）：def>0=推杆(低头)；V 高->抬头减速->def<0
+            elevator = -cfg.gain_speed * (V - cfg.V_ref) - cfg.gain_dspeed * dV
+            elevator += cfg.gain_pitch * (0.0 - pitch)
+            elevator += cfg.gain_pitch_damp * q          # q>0 抬头 -> 加推杆阻尼
         # 横滚通道：仿真验证 def>0(右翼α升)会左滚->bank↓
         # 于是用 (bank-bank_cmd) 作误差即可负反馈：bank 高时给正副翼把它压回目标
         aileron = cfg.gain_roll * (bank - bank_cmd) + cfg.gain_roll_rate * dbank
-        # 方向舵：去侧滑 + 偏航阻尼（符号经数值验证）
-        rudder = -cfg.gain_beta * beta - cfg.gain_yaw_rate * (-wb[1])
+        # 方向舵：学生固定偏角 + 去侧滑 + 偏航阻尼（默认偏角 0 时与原有行为一致）
+        rudder = (cfg.rudder_deg * cfg.tail_deg_to_def
+                  - cfg.gain_beta * beta - cfg.gain_yaw_rate * (-wb[1]))
 
         self._prev_V = V
         self._prev_bank = bank
@@ -173,7 +194,9 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
         tele["pitch"].append(float(np.degrees(body_axis_pitch(s.quat))))
 
         if s.pos[1] <= cfg.stop_alt:
-            reason = "landed"
+            # 触地下沉率过大 → 重着陆（俯冲砸地，用于“推杆过度”等失败案例的明确标识）
+            reason = ("hard_landing" if (-float(s.vel[1])) > cfg.hard_landing_sink
+                      else "landed")
             break
         if abs(body_axis_bank(s.quat)) > cfg.max_roll_rad:
             reason = "crashed(roll)"
