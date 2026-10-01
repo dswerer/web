@@ -10,6 +10,12 @@ export const gliderAPI = {
   file: (id, name) => client.get(`/glider/simulations/${id}/files/${name}`, { responseType: 'blob' }),
   // 短期签名流式播放地址（历史 MP4 记录直挂 <video>，支持 Range 拖动）
   streamUrl: (id, name = 'flight_replay.mp4') => client.get(`/glider/simulations/${id}/stream-url?name=${name}`),
+  // 逐帧轨迹数据（最小向量接口）：'bin' = ftrc 二进制（ArrayBuffer，推荐）、'json' = JSON
+  // 格式与解析示例见 simulation/glider/RENDER_API.md
+  trace: (id, format = 'json') => client.get(
+    `/glider/simulations/${id}/trace${format === 'bin' ? '?format=bin' : ''}`,
+    format === 'bin' ? { responseType: 'arraybuffer' } : undefined,
+  ),
   // 引擎能力探测（提交前检查）
   capabilities: () => client.get('/glider/capabilities'),
 };

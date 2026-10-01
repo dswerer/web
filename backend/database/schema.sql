@@ -596,6 +596,18 @@ CREATE TABLE IF NOT EXISTS glider_simulations (
   FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- 滑翔机轨迹数据（每帧位置/姿态；最小向量接口 ftrc 格式，zlib 压缩存储）
+-- 模拟产物 flight_trace.bin 入库；接口读库供前端（three.js）与独立渲染程序使用。
+CREATE TABLE IF NOT EXISTS glider_trajectories (
+  simulation_id INTEGER PRIMARY KEY,
+  format TEXT NOT NULL DEFAULT 'ftrc-f32/1',
+  frame_count INTEGER NOT NULL,
+  state_dim INTEGER NOT NULL,
+  frames BLOB NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (simulation_id) REFERENCES glider_simulations(id) ON DELETE CASCADE
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_school ON users(school_id);

@@ -2,6 +2,7 @@ const db = require('../config/database');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFile } = require('child_process');
 const { UPLOAD_ROOT } = require('../middleware/upload');
 const { canViewSimulation } = require('../helpers/gliderPolicy');
@@ -66,6 +67,15 @@ const STATE_LABEL = {
 // 结果文件白名单。flight_replay.mp4 仅为兼容历史记录保留（新试飞不再生成视频，
 // 飞行回放改由前端基于逐帧轨迹数据（trace 接口）渲染，见 simulation/glider/RENDER_API.md）。
 const ALLOWED_FILES = new Set(['trajectory3d.png', 'flight_telemetry.png', 'flight_telemetry.csv', 'summary.json', 'flight_replay.mp4']);
+
+// 轨迹数据契约（与 simulation/glider/flight_trace.py 保持一致）：
+// ftrc 头 20B = magic "FTRC" + version u32 + count u32 + dim u32 + extra_dim u32，数据为 float32 小端
+const TRACE_BIN_NAME = 'flight_trace.bin';
+const TRACE_COLUMNS = ['t', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw', 'vx', 'vy', 'vz'];
+const TRACE_EXTRA_COLUMNS = ['CL', 'CD']; // ftrc 扩展列（与 flight_trace.py 的 BIN_EXTRA_COLUMNS 一致）
+const FTRC_MAGIC = 0x46545243; // "FTRC"
+const FTRC_HEADER = 20;
+const FTRC_VERSION = 1;
 
 // 服务启动时清扫历史遗留的 running 任务，避免僵尸记录永久占满并发上限。
 db.prepare(
@@ -220,7 +230,7 @@ exports.simulate = async (req, res) => {
       clearTimeout(killTimer);
       markError('无法启动模拟引擎：' + err.message);
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
@@ -232,6 +242,10 @@ exports.simulate = async (req, res) => {
         const summaryFile = path.join(simDir, 'summary.json');
         if (!fs.existsSync(summaryFile)) throw new Error('未生成 summary.json');
         const result = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+
+        // 每帧数据（位置/姿态，最小向量接口）入库：glider_trajectories。
+        // 入库后，前端（及任何消费方）可通过 trace 接口读取并渲染飞行回放。
+        result.trajectory_saved = storeTrajectory(id, simDir);
 
         db.prepare(
           `UPDATE glider_simulations
@@ -346,6 +360,86 @@ exports.streamUrl = (req, res) => {
   } catch (err) {
     console.error('生成滑翔机播放地址错误:', err);
     res.status(500).json({ error: '生成播放地址失败' });
+  }
+};
+
+// ------------------------------------------------------------------
+// 轨迹数据（最小向量接口）：入库 / 读库（供前端 three.js 回放渲染）
+// ------------------------------------------------------------------
+
+// 解析 ftrc 头（与 simulation/glider/flight_trace.py 的契约一致）
+function parseFtrc(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < FTRC_HEADER) throw new Error('ftrc 数据过短');
+  if (buf.readUInt32BE(0) !== FTRC_MAGIC) throw new Error('不是 ftrc 数据（magic 不符）');
+  const version = buf.readUInt32LE(4);
+  const count = buf.readUInt32LE(8);
+  const dim = buf.readUInt32LE(12);
+  const extraDim = buf.readUInt32LE(16);
+  if (version !== FTRC_VERSION) throw new Error(`不支持的 ftrc 版本 ${version}`);
+  if (buf.length < FTRC_HEADER + count * (dim + extraDim) * 4) throw new Error('ftrc 数据不完整');
+  return { version, count, dim, extraDim };
+}
+
+// 把本次模拟的 flight_trace.bin 存入 glider_trajectories（zlib 压缩）
+function storeTrajectory(simId, simDir) {
+  try {
+    const binPath = path.join(simDir, TRACE_BIN_NAME);
+    if (!fs.existsSync(binPath)) return false;
+    const raw = fs.readFileSync(binPath);
+    const { count, dim } = parseFtrc(raw);
+    db.prepare(
+      `INSERT INTO glider_trajectories (simulation_id, format, frame_count, state_dim, frames)
+       VALUES (?, 'ftrc-f32/1', ?, ?, ?)
+       ON CONFLICT(simulation_id) DO UPDATE SET
+         format=excluded.format, frame_count=excluded.frame_count,
+         state_dim=excluded.state_dim, frames=excluded.frames,
+         created_at=CURRENT_TIMESTAMP`
+    ).run(simId, count, dim, zlib.deflateSync(raw));
+    return true;
+  } catch (err) {
+    console.error(`[glider#${simId}] 轨迹入库失败:`, err.message);
+    return false;
+  }
+}
+
+// 每帧轨迹数据（最小向量接口 ftrc）——前端 three.js 回放渲染的数据源（接入指南见 RENDER_API.md）
+//   ?format=json（默认）：{ count, dim, extra_dim, columns, frames: number[][] }（含扩展列 CL/CD）
+//   ?format=bin：原始 ftrc 字节（application/octet-stream，可直接 ArrayBuffer 解析）
+exports.trace = (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = db.prepare('SELECT * FROM glider_simulations WHERE id = ?').get(id);
+    if (!canRead(row, req.user)) return res.status(404).json({ error: '模拟记录不存在' });
+    const traj = db.prepare(
+      'SELECT format, frame_count, state_dim, frames FROM glider_trajectories WHERE simulation_id = ?'
+    ).get(id);
+    if (!traj) return res.status(404).json({ error: '该记录暂无轨迹数据' });
+    const raw = zlib.inflateSync(traj.frames);
+    const { count, dim, extraDim } = parseFtrc(raw);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    if (String(req.query.format || 'json').toLowerCase() === 'bin') {
+      return res.type('application/octet-stream').send(raw);
+    }
+    const stride = dim + extraDim;
+    const frames = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const base = FTRC_HEADER + i * stride * 4;
+      const rec = new Array(stride);
+      for (let c = 0; c < stride; c++) rec[c] = raw.readFloatLE(base + c * 4);
+      frames[i] = rec;
+    }
+    return res.json({
+      simulation_id: Number(id),
+      format: 'ftrc-f32/1',
+      count,
+      dim,
+      extra_dim: extraDim,
+      columns: TRACE_COLUMNS.concat(TRACE_EXTRA_COLUMNS.slice(0, extraDim)),
+      frames,
+    });
+  } catch (err) {
+    console.error('滑翔机轨迹读取错误:', err);
+    return res.status(500).json({ error: '轨迹数据读取失败' });
   }
 };
 

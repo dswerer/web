@@ -9,7 +9,13 @@
   flight_telemetry.csv  全量遥测
   flight_telemetry.png  高度/空速/迎角/下沉率/L-D 曲线
   trajectory3d.png      世界系 3D 航迹
+  flight_trace.npz      最小向量接口轨迹（flight_trace.py 契约；供渲染/后置分析）
+  flight_trace.bin      ftrc 二进制轨迹（Node 解析入库 / 前端 three.js 直读的交换格式）
 最终向 stdout 打印一行 JSON（平台后端据此落库）。
+
+接口分层：物理仿真产出 FlightRun（trace = 最小向量接口 + tele = 扩展遥测）；
+遥测图表（plot_flight）只消费 tele；飞行回放由前端（three.js）消费 trace 渲染，本脚本不生成视频。
+平台链路：数据（ftrc）存入数据库 → GET /api/glider/simulations/:id/trace → 前端 three.js 渲染回放。
 
 后端自动选择：
   - Linux x86_64 + CPython 3.11 且装有 novaphy wheel → novaPhy 物理后端（默认 prefer）；
@@ -196,14 +202,40 @@ def main(argv=None):
 
     BackendCls = _pick_backend(args.backend)
     backend = BackendCls(glider)
-    tele = run_flight(backend, glider, cfg)
+    run = run_flight(backend, glider, cfg)
+    tele = run.tele        # 扩展遥测：图表 / CSV / 诊断
+    trace = run.trace      # 最小向量接口：渲染与外部消费的唯一数据源
     summary = flight_summary(tele)
 
     files = {"summary": "summary.json", "csv": "flight_telemetry.csv",
-             "telemetry_png": "flight_telemetry.png", "trajectory_png": "trajectory3d.png"}
+             "telemetry_png": "flight_telemetry.png", "trajectory_png": "trajectory3d.png",
+             "trace": "flight_trace.npz", "trace_bin": "flight_trace.bin"}
     write_csv(tele, os.path.join(outdir, files["csv"]))
     write_plots(tele, outdir, backend.name, {
         "cg": args.cg, "dihedral": args.dihedral, "speed": args.speed})
+
+    # 轨迹落盘（最小向量接口）：供独立渲染 / 后置分析 / 后端入库复用，无需重跑物理仿真。
+    # 附加产物失败不影响主结果，仅降级去掉文件条目。
+    try:
+        trace.meta.update({
+            "dihedral_deg": round(float(args.dihedral), 3),
+            "cg_x": round(float(args.cg), 3),
+            "speed": round(float(args.speed), 3),
+            "alt": round(float(args.alt), 3),
+            "autolevel": bool(args.autolevel),
+            "wing_area": round(float(args.wing_area), 3),
+            "mass": round(float(args.mass), 3),
+            "elevator_deg": round(float(args.elevator), 3),
+            "rudder_deg": round(float(args.rudder), 3),
+            "v_ref": round(float(cfg.V_ref), 2),
+        })
+        trace.save(os.path.join(outdir, files["trace"]))
+        # ftrc 二进制：Node 解析入库 / 前端 three.js 直读的交换格式（含 CL/CD 扩展列）
+        trace.save_bin(os.path.join(outdir, files["trace_bin"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[trace] save failed: {exc}", file=sys.stderr)
+        files["trace"] = None
+        files["trace_bin"] = None
 
     backend.close()
 

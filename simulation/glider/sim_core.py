@@ -5,6 +5,11 @@ reference / novaPhy 两个后端走完全相同的流程：
   2. 控制器输出舵面 def
   3. aero.compute_wrench 计算气动力/力矩（世界系，相对 COM）
   4. backend.apply_wrench + backend.step(dt)（引擎负责刚体动力学积分）
+
+产出（run_flight → FlightRun）：
+  - trace：最小向量接口 FlightTrace（时间 + 位置 + 姿态 + 速度），
+    供渲染 / 回放 / 外部消费——见 flight_trace.py 的数据契约；
+  - tele：扩展遥测（气动系数、舵面、姿态角等），供图表 / CSV / 诊断。
 """
 
 from __future__ import annotations
@@ -13,9 +18,24 @@ import numpy as np
 
 from aero import compute_wrench
 from aircraft import Glider, air_density
+from flight_trace import FlightTrace
 from spatial import (RigidState, body_axis_bank, body_axis_heading,
                      body_axis_pitch, quat_from_axis_angle, quat_from_heading_pitch,
                      quat_mul, quat_normalize)
+
+
+class FlightRun:
+    """一次飞行仿真的产出。
+
+    trace : FlightTrace —— 最小向量接口（渲染程序只消费它）；
+    tele  : dict[str, ndarray] —— 扩展遥测（图表 / CSV / 诊断用）。
+    """
+
+    __slots__ = ("trace", "tele")
+
+    def __init__(self, trace: FlightTrace, tele: dict):
+        self.trace = trace
+        self.tele = tele
 
 
 class SimConfig:
@@ -158,8 +178,8 @@ def launch_pose(cfg: SimConfig):
     return pos, q, vel, np.zeros(3)
 
 
-def run_flight(backend, glider: Glider, cfg: SimConfig):
-    """执行一次飞行，返回遥测 dict。"""
+def run_flight(backend, glider: Glider, cfg: SimConfig) -> FlightRun:
+    """执行一次飞行，返回 FlightRun（最小向量接口 trace + 扩展遥测 tele）。"""
     pos0, q0, vel0, om0 = launch_pose(cfg)
     backend.reset(pos0, q0, vel0, om0)
     ctrl = FlightController(cfg)
@@ -167,6 +187,7 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
     tele = {k: [] for k in
             ("t", "pos", "quat", "vel", "alpha", "beta", "V", "CL", "CD",
              "sink", "elevator", "aileron", "rudder", "alt", "bank", "pitch")}
+    trace_rows = []          # 最小向量接口的逐帧状态：[t, pos, quat, vel]
 
     dt = cfg.dt
     n_steps = int(cfg.sim_time / dt)
@@ -185,6 +206,7 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
         tele["pos"].append(s.pos.copy())
         tele["quat"].append(s.quat.copy())
         tele["vel"].append(s.vel.copy())
+        trace_rows.append((i * dt, *s.pos, *s.quat, *s.vel))
         for k in ("alpha", "beta", "V", "CL", "CD", "sink"):
             tele[k].append(diag[k])
         for k in ("elevator", "aileron", "rudder"):
@@ -212,7 +234,20 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
     out = {k: np.asarray(v) for k, v in tele.items()}
     out["reason"] = reason
     out["steps"] = len(out["t"])
-    return out
+
+    # 最小向量接口：只带运动状态；气动系数作为可选扩展通道（HUD 显示 L/D 用）
+    trace = FlightTrace(
+        np.asarray(trace_rows, dtype=float),
+        meta={
+            "backend": getattr(backend, "name", "unknown"),
+            "reason": reason,
+            "steps": int(out["steps"]),
+            "dt_s": dt,
+            "maneuver": cfg.maneuver,
+        },
+        extras={"CL": out["CL"], "CD": out["CD"]},
+    )
+    return FlightRun(trace, out)
 
 
 def flight_summary(tele) -> dict:
