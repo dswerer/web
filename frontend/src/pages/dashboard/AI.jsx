@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Alert, Card, Input, Button, Select, Typography, Space, Spin, message } from 'antd';
+import { Alert, Card, Input, Button, Select, Typography, Grid, Tag, Spin, message } from 'antd';
 import { SendOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons';
 import { aiAPI, courseAPI } from '../../api';
 import { useAuth } from '../../store/AuthContext';
@@ -18,14 +18,25 @@ export default function AIAssistant() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const chatEndRef = useRef(null);
+  const sequenceRef = useRef(0);
+  const screens = Grid.useBreakpoint();
 
   useEffect(() => {
+    let active = true;
+    sequenceRef.current += 1;
+    setChat([]);
+    setCourseId(null);
+    setLoading(false);
+    setEnabled(false);
+    setLoadError('');
     aiAPI.getCourses().then((res) => {
+      if (!active) return;
       setCourses(res.courses || []);
       setEnabled(Boolean(res.enabled));
       const requested = Number(params.get('course_id'));
       if (res.courses?.some((course) => course.id === requested)) setCourseId(requested);
-    }).catch(() => setLoadError('无法加载可提问课程，请刷新页面重试。'));
+    }).catch(() => { if (active) setLoadError('无法加载可提问课程，请刷新页面重试。'); });
+    return () => { active = false; sequenceRef.current += 1; };
   }, [params]);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat]);
@@ -47,14 +58,19 @@ export default function AIAssistant() {
     if (!value || loading) return;
     if (!courseId) { message.warning('请先选择一门课程'); return; }
     setLoading(true);
+    const sequence = ++sequenceRef.current;
     setQuestion('');
     setChat((prev) => [...prev, { role: 'user', content: value }]);
     try {
       const res = await aiAPI.ask(value, courseId);
-      setChat((prev) => [...prev, { role: 'ai', content: res.answer, sources: res.sources || [] }]);
+      if (sequence !== sequenceRef.current) return;
+      setChat((prev) => [...prev, { role: 'ai', content: res.answer, sources: res.sources || [], courseId,
+        origin: res.origin, requestId: res.request_id }]);
     } catch (err) {
-      setChat((prev) => [...prev, { role: 'ai', content: err?.response?.data?.error || '抱歉，灵境小智暂时遇到了问题。' }]);
-    } finally { setLoading(false); }
+      if (sequence !== sequenceRef.current) return;
+      setChat((prev) => [...prev, { role: 'ai', error: true,
+        content: err?.response?.data?.error || '未能取得 AI 回复，请稍后重试。' }]);
+    } finally { if (sequence === sequenceRef.current) setLoading(false); }
   };
 
   return (
@@ -71,7 +87,10 @@ export default function AIAssistant() {
         </div>}
         {chat.map((item, i) => <div key={i} style={{ marginBottom: 18, display: 'flex', gap: 8, justifyContent: item.role === 'user' ? 'flex-end' : 'flex-start' }}>
           {item.role === 'ai' && <RobotOutlined style={{ fontSize: 20, color: '#1a73e8' }} />}
-          <div style={{ maxWidth: '78%', padding: '8px 14px', borderRadius: 12, background: item.role === 'user' ? '#1a73e8' : '#f0f2f5', color: item.role === 'user' ? '#fff' : '#333', whiteSpace: 'pre-wrap' }}>
+          <div style={{ maxWidth: screens.sm ? '78%' : '90%', minWidth: 0, overflowWrap: 'anywhere', padding: '8px 14px', borderRadius: 12, background: item.role === 'user' ? '#1a73e8' : '#f0f2f5', color: item.role === 'user' ? '#fff' : '#333', whiteSpace: 'pre-wrap' }}>
+            {item.role === 'ai' && <div style={{ marginBottom: 6 }}><Tag color={item.error ? 'orange' : 'blue'}>
+              {item.error ? '服务提示' : item.origin === 'provider' ? 'AI 服务回复' : '规则或回退回复'}
+            </Tag></div>}
             {item.content}
             {item.sources?.length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #d9d9d9', paddingTop: 8 }}>
               <Text strong>参考资料</Text>
@@ -79,7 +98,7 @@ export default function AIAssistant() {
                 <Text type="secondary">[{source.ref}] {source.title} · {source.locator} </Text>
                 {source.type === 'resource' ? <Button type="link" size="small" onClick={() => downloadSource(source)}>下载</Button>
                   : source.type === 'task' ? <Link to={`/tasks/${source.id}`}>查看</Link>
-                    : <Link to={`/courses/${courseId}`}>查看课程</Link>}
+                    : <Link to={`/courses/${item.courseId}`}>查看课程</Link>}
               </div>)}
             </div>}
           </div>
@@ -88,14 +107,15 @@ export default function AIAssistant() {
         {loading && <Spin />}
         <div ref={chatEndRef} />
       </Card>
-      <Space.Compact style={{ width: '100%', marginTop: 12 }}>
-        <Select style={{ width: 230 }} placeholder="选择课程（必选）" value={courseId}
+      <div style={{ display: 'flex', flexDirection: screens.sm ? 'row' : 'column', gap: 8, width: '100%', marginTop: 12 }}>
+        <Select style={{ width: screens.sm ? 230 : '100%', flexShrink: 0 }} placeholder="选择课程（必选）" value={courseId} disabled={loading}
           onChange={(id) => { setCourseId(id); setChat([]); }}
           options={courses.map((course) => ({ label: course.title, value: course.id }))} />
         <Input placeholder="输入与当前课程相关的问题" maxLength={1000} value={question}
-          disabled={!enabled || !courseId} onChange={(event) => setQuestion(event.target.value)} onPressEnter={handleAsk} />
+          disabled={!enabled || !courseId || loading} onChange={(event) => setQuestion(event.target.value)}
+          onPressEnter={(event) => { if (!event.nativeEvent.isComposing) handleAsk(); }} />
         <Button type="primary" icon={<SendOutlined />} onClick={handleAsk} loading={loading} disabled={!enabled || !courseId}>发送</Button>
-      </Space.Compact>
+      </div>
     </div>
   );
 }

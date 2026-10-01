@@ -191,7 +191,7 @@ exports.upload = (req, res) => {
 
     if (task_id) {
       const task = db.prepare(`
-        SELECT t.id, t.status, l.id AS lesson_id, l.course_id
+        SELECT t.id, t.status, l.id AS lesson_id, l.course_id, l.status AS lesson_status
         FROM tasks t
         JOIN lessons l ON l.id = t.lesson_id
         WHERE t.id = ?
@@ -200,7 +200,7 @@ exports.upload = (req, res) => {
         removeUploadedFile(req.file);
         return res.status(400).json({ error: '所选任务不属于当前课程' });
       }
-      if (task.status !== 'active') {
+      if (task.status !== 'active' || task.lesson_status === 'cancelled') {
         removeUploadedFile(req.file);
         return res.status(409).json({ error: '该任务当前不可提交' });
       }

@@ -165,12 +165,13 @@ exports.detail = (req, res) => {
       WHERE l.course_id = ? ORDER BY l.sort_order`).all(req.user.role === 'student' ? req.user.id : null, id);
     const tasks = db.prepare(`SELECT t.*, l.title AS lesson_title FROM tasks t
       JOIN lessons l ON l.id = t.lesson_id WHERE l.course_id = ?
+      ${req.user.role === 'student' ? "AND l.status != 'cancelled' AND t.status = 'active'" : ''}
       ORDER BY l.sort_order, t.sort_order`).all(id);
     const progress = req.user.role === 'student'
       ? db.prepare(`SELECT COALESCE(ROUND(AVG(COALESCE(lp.progress, 0))), 0) AS progress
           FROM lessons l LEFT JOIN lesson_progress lp
             ON lp.lesson_id = l.id AND lp.student_id = ?
-          WHERE l.course_id = ?`).get(req.user.id, id).progress
+          WHERE l.course_id = ? AND l.status != 'cancelled'`).get(req.user.id, id).progress
       : 0;
     const resources = db.prepare('SELECT * FROM resources WHERE course_id = ? ORDER BY created_at DESC').all(id).map(toFileDto);
     const enrollments = (() => {
@@ -485,13 +486,15 @@ exports.addTask = (req, res) => {
       return res.status(400).json({ error: '任务名称不能为空' });
     }
 
-    const lesson = db.prepare('SELECT course_id FROM lessons WHERE id = ?').get(lesson_id);
+    const lesson = db.prepare('SELECT course_id, status FROM lessons WHERE id = ?').get(lesson_id);
     if (!lesson) {
       return res.status(400).json({ error: '课时不存在' });
     }
     if (!canManageCourse(req.user, lesson.course_id)) {
       return res.status(403).json({ error: '无权管理该课程' });
     }
+
+    if (lesson.status === 'cancelled') return res.status(409).json({ error: '不能向已取消课时添加任务' });
 
     const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM tasks WHERE lesson_id = ?').get(lesson_id);
 

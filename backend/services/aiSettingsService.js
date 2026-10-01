@@ -38,10 +38,14 @@ function decryptKey(value) {
   if (!value) return null;
   const key = masterKey();
   if (!key) throw Object.assign(new Error('AI_CONFIG_SECRET 未配置，无法读取已保存的 API Key'), { status: 503 });
-  const [iv, tag, data] = value.split('.').map((part) => Buffer.from(part, 'base64url'));
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  try {
+    const [iv, tag, data] = value.split('.').map((part) => Buffer.from(part, 'base64url'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  } catch {
+    throw Object.assign(new Error('AI 密钥无法解密，请管理员检查 AI_CONFIG_SECRET 或重新录入 API Key'), { status: 503, code: 'AI_KEY_DECRYPT' });
+  }
 }
 
 function publicSettings() {
