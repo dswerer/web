@@ -62,8 +62,8 @@ if [ ! -f "$WHEEL" ]; then
   echo "请将交付包目录放到 simulation/ 下，或用 WHEEL 环境变量指定路径（用法见本脚本头部注释）。"
   exit 1
 fi
-# 必需：novaPhy + headless 出图/出视频依赖（失败即中断）
-/opt/novaphy/bin/pip install "$WHEEL" numpy matplotlib Pillow imageio imageio-ffmpeg
+# 必需：novaPhy + headless 出图依赖（失败即中断）
+/opt/novaphy/bin/pip install "$WHEEL" numpy matplotlib Pillow
 
 # 可选：本机可视化查看器（WSLg 显示用；平台 headless 运行不需要，失败不中断）
 /opt/novaphy/bin/pip install glfw PyOpenGL moderngl imgui imgui_bundle \
@@ -72,7 +72,6 @@ fi
 echo "== [5/6] 校验 =="
 /opt/novaphy/bin/python -c "import novaphy; print('novaPhy    import OK')"
 /opt/novaphy/bin/python -c "import numpy, matplotlib; print('headless   import OK')"
-/opt/novaphy/bin/python -c "import imageio, imageio_ffmpeg; print('MP4 回放   import OK')"
 /opt/novaphy/bin/python -c "import moderngl, glfw, imgui, OpenGL; print('viewer     import OK')" \
   || echo "WARN: viewer 依赖不可用（headless 运行不受影响）"
 echo "ALL_DONE"

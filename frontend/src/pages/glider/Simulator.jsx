@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Row, Col, Card, Form, InputNumber, Button, Tag, Space, Spin, message,
-  Statistic, Alert, List, Typography, Empty, Result, Select,
+  Statistic, Alert, List, Typography, Empty, Result, Select, Divider,
 } from 'antd';
 import { ArrowLeftOutlined, RocketOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { gliderAPI } from '../../api/glider';
@@ -15,6 +15,7 @@ const { Title, Text } = Typography;
 const STATE_META = {
   ok: { color: 'green', label: '正常滑翔' },
   landed: { color: 'blue', label: '成功着陆' },
+  hard_landing: { color: 'orange', label: '重着陆（触地过快）' },
   'crashed(roll)': { color: 'red', label: '横滚失控坠毁' },
   'stalled/slow': { color: 'orange', label: '失速下坠' },
   timedout: { color: 'default', label: '超时结束' },
@@ -23,8 +24,9 @@ const STATE_META = {
 const STATE_TIPS = {
   ok: '滑翔机在设定时间内稳定飞行，气动布局比较合适，可以试试更高更远的目标。',
   landed: '飞机平稳落地，这是一次成功的试飞！',
+  hard_landing: '飞机下降太快，重重地“砸”在了地面上。试试把平尾偏角调小一些，或增大机翼、减轻重量。',
   'crashed(roll)': '飞机发生了横滚失控。试试增大机翼上反角、把重心往前移，或适当提高投放速度。',
-  'stalled/slow': '飞机失速下坠了。试试把重心往前移一些，或提高一点投放速度。',
+  'stalled/slow': '飞机失速下坠了。试试把重心往前移一些、减小平尾上抬角度，或提高一点投放速度。',
   timedout: '在设定时间内飞行稳定、没有落地。',
 };
 
@@ -218,6 +220,10 @@ export default function GliderSimulator() {
         dihedral_deg: values.dihedral,
         cg_x: values.cg,
         speed: values.speed,
+        wing_area: values.wing_area,
+        mass: values.mass,
+        elevator_deg: values.elevator,
+        rudder_deg: values.rudder,
         course_id: courseId,
         lesson_id: lessonId,
       });
@@ -280,7 +286,7 @@ export default function GliderSimulator() {
         showIcon
         message={isStudent ? '设定你的滑翔机参数，让物理引擎帮你试飞' : '滑翔机试飞记录（只读视图）'}
         description={isStudent
-          ? '输入机翼上反角、重心位置和初始投放速度，后台将运行真实气动仿真。滑翔时间越长、水平距离越远，说明你的设计越出色。'
+          ? '调整机翼（面积 / 上反角）、重心、投放速度与两只尾翼的角度，后台将运行真实气动仿真。滑翔时间越长、水平距离越远，说明你的设计越出色。'
           : user?.role === 'admin'
             ? '模拟提交仅面向学生。管理员可查看全部试飞记录与结果回放。'
             : user?.role === 'academic_mentor'
@@ -304,7 +310,7 @@ export default function GliderSimulator() {
           type="success"
           showIcon
           message={`实验环境就绪：${engineInfo.detectedBackend === 'novaphy' ? '真 novaPhy 物理引擎' : (engineInfo.detectedBackend || '参考后端')}`}
-          description={`解释器：${engineInfo.python}${engineInfo.video ? ' · 将生成 MP4 飞行回放' : ' · 已关闭视频回放'}`}
+          description={`解释器：${engineInfo.python} · 逐帧飞行数据经 trace 接口供回放渲染`}
         />
       )}
 
@@ -316,7 +322,7 @@ export default function GliderSimulator() {
             <Form
               form={form}
               layout="vertical"
-              initialValues={{ dihedral: 5, cg: 0, speed: 36 }}
+              initialValues={{ dihedral: 5, cg: 0, speed: 36, wing_area: 17.5, mass: 420, elevator: 0, rudder: 0 }}
               onFinish={startSim}
               onFinishFailed={onFinishFailed}
             >
@@ -367,6 +373,45 @@ export default function GliderSimulator() {
               >
                 <InputNumber min={15} max={60} step={1} style={{ width: '100%' }} addonAfter="米/秒" />
               </Form.Item>
+              <Divider titlePlacement="left" plain style={{ marginTop: 0 }}>机身与尾翼（进阶）</Divider>
+              <Row gutter={12}>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="wing_area"
+                    label="机翼面积（m²）"
+                    extra="越大升力越大、飞得越慢越久。"
+                  >
+                    <InputNumber min={10} max={30} step={0.5} style={{ width: '100%' }} addonAfter="m²" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="mass"
+                    label="整机质量（kg）"
+                    extra="越重飞得越快、下沉越快。"
+                  >
+                    <InputNumber min={250} max={700} step={10} style={{ width: '100%' }} addonAfter="kg" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="elevator"
+                    label="水平尾翼偏角（°）"
+                    extra="正值上抬（抬头）· 负值下压（俯冲）；角度太大会失速。"
+                  >
+                    <InputNumber min={-15} max={15} step={0.5} style={{ width: '100%' }} addonAfter="度" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="rudder"
+                    label="垂直尾翼偏角（°）"
+                    extra="正值机头右偏 · 负值左偏，飞机会转弯。"
+                  >
+                    <InputNumber min={-15} max={15} step={0.5} style={{ width: '100%' }} addonAfter="度" />
+                  </Form.Item>
+                </Col>
+              </Row>
               <Button type="primary" htmlType="submit" icon={<ThunderboltOutlined />} loading={submitting} block
                 disabled={!canSubmit}>
                 {engineChecking ? '正在检测实验环境…' : '开始试飞'}
@@ -401,7 +446,7 @@ export default function GliderSimulator() {
               ) : viewing.status === 'running' ? (
                   <Space direction="vertical" style={{ width: '100%', textAlign: 'center' }}>
                     <Spin size="large" />
-                    <Text type="secondary">物理引擎正在计算并渲染全程回放（真 NovaPhy 通常约 1~3 分钟），已等待约 {waitSec} 秒…</Text>
+                    <Text type="secondary">物理引擎正在计算飞行轨迹与结果图表（真 NovaPhy 通常约 1~2 分钟），已等待约 {waitSec} 秒…</Text>
                   </Space>
                 ) : viewing.status === 'error' ? (
                   <Result status="error" title="本次试飞失败" subTitle={viewing.error || '模拟引擎异常'} />
@@ -422,10 +467,21 @@ export default function GliderSimulator() {
                       <Col xs={12} sm={8}><Statistic title="落地高度" value={viewing.result?.alt_end ?? '—'} suffix="m" /></Col>
                     </Row>
 
+                    {/* 历史记录回放（旧版后端生成的 MP4，仅早期记录有）。新试飞不再生成视频：
+                        飞行回放将由前端基于逐帧轨迹数据渲染（three.js 接入中），
+                        数据接口 GET /api/glider/simulations/:id/trace，指南见 simulation/glider/RENDER_API.md */}
                     {img.video && (
                       <Card size="small" title="✈️ 飞行过程回放（视频）" style={{ marginBottom: 16 }}>
-                        <video src={img.video} type="video/mp4" controls autoPlay loop muted playsInline
-                          style={{ width: '100%', borderRadius: 6, background: '#000' }} />
+                        <video
+                          src={img.video}
+                          controls
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          onError={() => message.warning('视频加载失败：请刷新页面或重新打开本条记录')}
+                          style={{ width: '100%', borderRadius: 6, background: '#000' }}
+                        />
                         <Text type="secondary">3D 追逐视角回放：从投放到降落的完整飞行过程。</Text>
                       </Card>
                     )}
@@ -478,6 +534,14 @@ export default function GliderSimulator() {
                               <Text type="secondary">上反角 {item.dihedral_deg}°</Text>
                               <Text type="secondary">重心 {item.cg_x > 0 ? '+' : ''}{item.cg_x} m</Text>
                               <Text type="secondary">速度 {item.speed} m/s</Text>
+                              {item.wing_area != null && item.wing_area !== 17.5 && (
+                                <Text type="secondary">面积 {item.wing_area} m²</Text>
+                              )}
+                              {item.mass != null && item.mass !== 420 && (
+                                <Text type="secondary">质量 {item.mass} kg</Text>
+                              )}
+                              {item.elevator_deg ? <Text type="secondary">平尾 {item.elevator_deg}°</Text> : null}
+                              {item.rudder_deg ? <Text type="secondary">垂尾 {item.rudder_deg}°</Text> : null}
                               {item.glide_time_s != null && <Text type="secondary">· {item.glide_time_s}s</Text>}
                             </Space>
                           }

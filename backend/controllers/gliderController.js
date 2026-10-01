@@ -2,6 +2,7 @@ const db = require('../config/database');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFile } = require('child_process');
 const { UPLOAD_ROOT } = require('../middleware/upload');
 const { canViewSimulation } = require('../helpers/gliderPolicy');
@@ -16,8 +17,8 @@ const { canViewSimulation } = require('../helpers/gliderPolicy');
 //     （/mnt/d 与 D:\ 是同一物理盘：Node 用 Windows 路径读写结果，Python 用 /mnt/d 路径写结果，天然互通）
 //   · 无 WSL 的 Windows 兜底：GLIDER_PYTHON=python + GLIDER_BACKEND=reference（纯 numpy，行为等价）
 // GLIDER_BACKEND  auto | novaphy | reference（默认 auto：可加载 novaPhy 则优先 novaPhy）
-// GLIDER_RENDERER  mpl | gl（默认 mpl：matplotlib 回放；gl = GLB 模型 + OpenGL 延迟渲染，
-//                  需 moderngl/trimesh/pyglm 与可用 GL 上下文，不可用时 sim_service 自动回退 mpl）
+// GLIDER_RENDERER  mpl | gl（默认 mpl；gl = GLB 模型 + OpenGL 延迟渲染，供 --gl-preview / --gl-live；
+//                  需 moderngl/trimesh/pyglm 与可用 GL 上下文，缺失时仅该调试通道不可用）
 // GLIDER_MAX_ACTIVE  并发上限（默认 2）
 // ------------------------------------------------------------------
 function parsePython() {
@@ -46,10 +47,6 @@ const GLIDER_ALT = 150;            // 投放高度固定 (m)，避免变量过�
 // 单次最长仿真时间(s)：读环境变量 GLIDER_TIMEOUT 可调，默认 100。
 // 150m 投放、L/D≈15 的典型稳定滑翔约需 65~75s 才能落地；若设 60s 会被截断、看不到“平稳降落(landed)”。
 const GLIDER_TIMEOUT = Math.min(300, Math.max(20, Number.parseFloat(process.env.GLIDER_TIMEOUT) || 100));
-// MP4 飞行回放：默认生成（固定机位、覆盖全程）；GLIDER_VIDEO=0 关闭；帧率 / 时长上限可配
-const GLIDER_VIDEO = String(process.env.GLIDER_VIDEO || '1') !== '0';
-const GLIDER_VIDEO_FPS = Math.min(30, Math.max(4, parseInt(process.env.GLIDER_VIDEO_FPS || '10', 10) || 10));
-const GLIDER_VIDEO_MAX = Math.min(600, Math.max(5, Number.parseFloat(process.env.GLIDER_VIDEO_MAX) || 300));
 // 结果保留策略（决策 E-6）：默认 0 = 不自动清理；>0 表示 error 状态结果的可清理天数（供运维脚本使用）
 const GLIDER_RETENTION_DAYS = Math.max(0, parseInt(process.env.GLIDER_RETENTION_DAYS || '0', 10) || 0);
 
@@ -64,12 +61,24 @@ function toWslPath(p) {
 const STATE_LABEL = {
   ok: '正常滑翔',
   landed: '成功着陆',
+  hard_landing: '重着陆（触地过快）',
   'crashed(roll)': '横滚失控坠毁',
   'stalled/slow': '失速下坠',
   timedout: '超时结束',
 };
 
+// 结果文件白名单。flight_replay.mp4 仅为兼容历史记录保留（新试飞不再生成视频，
+// 飞行回放改由前端基于逐帧轨迹数据（trace 接口）渲染，见 simulation/glider/RENDER_API.md）。
 const ALLOWED_FILES = new Set(['trajectory3d.png', 'flight_telemetry.png', 'flight_telemetry.csv', 'summary.json', 'flight_replay.mp4']);
+
+// 轨迹数据契约（与 simulation/glider/flight_trace.py 保持一致）：
+// ftrc 头 20B = magic "FTRC" + version u32 + count u32 + dim u32 + extra_dim u32，数据为 float32 小端
+const TRACE_BIN_NAME = 'flight_trace.bin';
+const TRACE_COLUMNS = ['t', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw', 'vx', 'vy', 'vz'];
+const TRACE_EXTRA_COLUMNS = ['CL', 'CD']; // ftrc 扩展列（与 flight_trace.py 的 BIN_EXTRA_COLUMNS 一致）
+const FTRC_MAGIC = 0x46545243; // "FTRC"
+const FTRC_HEADER = 20;
+const FTRC_VERSION = 1;
 
 // 服务启动时清扫历史遗留的 running 任务，避免僵尸记录永久占满并发上限。
 db.prepare(
@@ -96,6 +105,10 @@ function toDto(row) {
     cg_x: row.cg_x,
     speed: row.speed,
     alt: row.alt,
+    wing_area: row.wing_area,               // 机翼面积 (m²)
+    mass: row.mass,                         // 整机质量 (kg)
+    elevator_deg: row.elevator_deg,         // 水平尾翼偏角 (°)
+    rudder_deg: row.rudder_deg,             // 垂直尾翼偏角 (°)
     status: row.status,                 // running / success / error
     state: row.state,                   // ok / landed / crashed(roll) / stalled/slow / timedout
     state_label: (row.state && STATE_LABEL[row.state]) || row.state || null,
@@ -147,11 +160,18 @@ exports.simulate = async (req, res) => {
     const dihedral_deg = clampNum(req.body.dihedral_deg, -30, 30, 5);
     const cg_x = clampNum(req.body.cg_x, -2, 2, 0);
     const speed = clampNum(req.body.speed, 15, 60, 36);
+    // 课程组扩展参数（范围留余量；前端另有更窄的 UI 范围）
+    const wing_area = clampNum(req.body.wing_area, 8, 32, 17.5);
+    const mass = clampNum(req.body.mass, 200, 800, 420);
+    const elevator_deg = clampNum(req.body.elevator_deg, -18, 18, 0);
+    const rudder_deg = clampNum(req.body.rudder_deg, -18, 18, 0);
 
     const info = db.prepare(
-      `INSERT INTO glider_simulations (student_id, dihedral_deg, cg_x, speed, alt, status, course_id, lesson_id)
-       VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`
-    ).run(req.user.id, dihedral_deg, cg_x, speed, GLIDER_ALT, courseId, lessonId);
+      `INSERT INTO glider_simulations
+         (student_id, dihedral_deg, cg_x, speed, alt, wing_area, mass, elevator_deg, rudder_deg, status, course_id, lesson_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`
+    ).run(req.user.id, dihedral_deg, cg_x, speed, GLIDER_ALT,
+          wing_area, mass, elevator_deg, rudder_deg, courseId, lessonId);
     const id = info.lastInsertRowid;
 
     const simDir = path.join(UPLOAD_ROOT, 'glider', String(id));
@@ -163,16 +183,19 @@ exports.simulate = async (req, res) => {
       '--cg', String(cg_x),
       '--speed', String(speed),
       '--alt', String(GLIDER_ALT),
+      '--wing-area', String(wing_area),
+      '--mass', String(mass),
+      '--elevator', String(elevator_deg),
+      '--rudder', String(rudder_deg),
       '--timeout', String(GLIDER_TIMEOUT),
       '--backend', GLIDER_BACKEND,
     ];
+    // 模拟只产出数据（含 flight_trace.bin 逐帧向量），不生成视频：
+    // 飞行回放由前端消费 trace 接口渲染（GET /api/glider/simulations/:id/trace，
+    // 接入指南：simulation/glider/RENDER_API.md）。
     if (GLIDER_RENDERER === 'gl') {
-      // 仅 gl 时显式推入（mpl 保持原 spawn 参数不变；gl 不可用由 sim_service 自动回退 mpl）
+      // 仅 gl 时显式推入（mpl 保持原 spawn 参数不变；GL 依赖缺失仅影响预览/实时窗口，不影响仿真）
       flags.push('--renderer', 'gl');
-    }
-    if (GLIDER_VIDEO) {
-      flags.push('--video', '--video-fps', String(GLIDER_VIDEO_FPS),
-                 '--video-max', String(GLIDER_VIDEO_MAX));
     }
 
     const markError = (msg) => {
@@ -214,7 +237,7 @@ exports.simulate = async (req, res) => {
       clearTimeout(killTimer);
       markError('无法启动模拟引擎：' + err.message);
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
@@ -226,6 +249,11 @@ exports.simulate = async (req, res) => {
         const summaryFile = path.join(simDir, 'summary.json');
         if (!fs.existsSync(summaryFile)) throw new Error('未生成 summary.json');
         const result = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+
+        // 每帧数据（位置/姿态，最小向量接口）入库：glider_trajectories。
+        // 入库后，前端（及任何消费方）可通过 trace 接口读取并渲染飞行回放。
+        result.trajectory_saved = storeTrajectory(id, simDir);
+
         db.prepare(
           `UPDATE glider_simulations
              SET status='success', state=?, glide_time=?, summary_json=?, updated_at=CURRENT_TIMESTAMP
@@ -320,7 +348,7 @@ exports.file = (req, res) => {
   }
 };
 
-// 生成短期签名播放地址（视频回放流式拖动，避免整段 blob 下载）
+// 生成短期签名播放地址（历史 MP4 记录流式拖动；新试飞不再生成视频，仅为兼容既有记录保留）
 exports.streamUrl = (req, res) => {
   try {
     const { id } = req.params;
@@ -339,6 +367,86 @@ exports.streamUrl = (req, res) => {
   } catch (err) {
     console.error('生成滑翔机播放地址错误:', err);
     res.status(500).json({ error: '生成播放地址失败' });
+  }
+};
+
+// ------------------------------------------------------------------
+// 轨迹数据（最小向量接口）：入库 / 读库（供前端 three.js 回放渲染）
+// ------------------------------------------------------------------
+
+// 解析 ftrc 头（与 simulation/glider/flight_trace.py 的契约一致）
+function parseFtrc(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < FTRC_HEADER) throw new Error('ftrc 数据过短');
+  if (buf.readUInt32BE(0) !== FTRC_MAGIC) throw new Error('不是 ftrc 数据（magic 不符）');
+  const version = buf.readUInt32LE(4);
+  const count = buf.readUInt32LE(8);
+  const dim = buf.readUInt32LE(12);
+  const extraDim = buf.readUInt32LE(16);
+  if (version !== FTRC_VERSION) throw new Error(`不支持的 ftrc 版本 ${version}`);
+  if (buf.length < FTRC_HEADER + count * (dim + extraDim) * 4) throw new Error('ftrc 数据不完整');
+  return { version, count, dim, extraDim };
+}
+
+// 把本次模拟的 flight_trace.bin 存入 glider_trajectories（zlib 压缩）
+function storeTrajectory(simId, simDir) {
+  try {
+    const binPath = path.join(simDir, TRACE_BIN_NAME);
+    if (!fs.existsSync(binPath)) return false;
+    const raw = fs.readFileSync(binPath);
+    const { count, dim } = parseFtrc(raw);
+    db.prepare(
+      `INSERT INTO glider_trajectories (simulation_id, format, frame_count, state_dim, frames)
+       VALUES (?, 'ftrc-f32/1', ?, ?, ?)
+       ON CONFLICT(simulation_id) DO UPDATE SET
+         format=excluded.format, frame_count=excluded.frame_count,
+         state_dim=excluded.state_dim, frames=excluded.frames,
+         created_at=CURRENT_TIMESTAMP`
+    ).run(simId, count, dim, zlib.deflateSync(raw));
+    return true;
+  } catch (err) {
+    console.error(`[glider#${simId}] 轨迹入库失败:`, err.message);
+    return false;
+  }
+}
+
+// 每帧轨迹数据（最小向量接口 ftrc）——前端 three.js 回放渲染的数据源（接入指南见 RENDER_API.md）
+//   ?format=json（默认）：{ count, dim, extra_dim, columns, frames: number[][] }（含扩展列 CL/CD）
+//   ?format=bin：原始 ftrc 字节（application/octet-stream，可直接 ArrayBuffer 解析）
+exports.trace = (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = db.prepare('SELECT * FROM glider_simulations WHERE id = ?').get(id);
+    if (!canRead(row, req.user)) return res.status(404).json({ error: '模拟记录不存在' });
+    const traj = db.prepare(
+      'SELECT format, frame_count, state_dim, frames FROM glider_trajectories WHERE simulation_id = ?'
+    ).get(id);
+    if (!traj) return res.status(404).json({ error: '该记录暂无轨迹数据' });
+    const raw = zlib.inflateSync(traj.frames);
+    const { count, dim, extraDim } = parseFtrc(raw);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    if (String(req.query.format || 'json').toLowerCase() === 'bin') {
+      return res.type('application/octet-stream').send(raw);
+    }
+    const stride = dim + extraDim;
+    const frames = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const base = FTRC_HEADER + i * stride * 4;
+      const rec = new Array(stride);
+      for (let c = 0; c < stride; c++) rec[c] = raw.readFloatLE(base + c * 4);
+      frames[i] = rec;
+    }
+    return res.json({
+      simulation_id: Number(id),
+      format: 'ftrc-f32/1',
+      count,
+      dim,
+      extra_dim: extraDim,
+      columns: TRACE_COLUMNS.concat(TRACE_EXTRA_COLUMNS.slice(0, extraDim)),
+      frames,
+    });
+  } catch (err) {
+    console.error('滑翔机轨迹读取错误:', err);
+    return res.status(500).json({ error: '轨迹数据读取失败' });
   }
 };
 
@@ -401,7 +509,6 @@ function buildCapabilities(probe) {
     renderer: GLIDER_RENDERER,
     detectedBackend: (probe && probe.backend) || '',
     python: PY.mode === 'wsl' ? `wsl:${PY.distro}:${PY.python}` : PY.python,
-    video: GLIDER_VIDEO,
     maxActive: GLIDER_MAX_ACTIVE,
     retentionDays: GLIDER_RETENTION_DAYS,
     probe,

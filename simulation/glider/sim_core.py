@@ -5,6 +5,11 @@ reference / novaPhy 两个后端走完全相同的流程：
   2. 控制器输出舵面 def
   3. aero.compute_wrench 计算气动力/力矩（世界系，相对 COM）
   4. backend.apply_wrench + backend.step(dt)（引擎负责刚体动力学积分）
+
+产出（run_flight → FlightRun）：
+  - trace：最小向量接口 FlightTrace（时间 + 位置 + 姿态 + 速度），
+    供渲染 / 回放 / 外部消费——见 flight_trace.py 的数据契约；
+  - tele：扩展遥测（气动系数、舵面、姿态角等），供图表 / CSV / 诊断。
 """
 
 from __future__ import annotations
@@ -13,9 +18,24 @@ import numpy as np
 
 from aero import compute_wrench
 from aircraft import Glider, air_density
+from flight_trace import FlightTrace
 from spatial import (RigidState, body_axis_bank, body_axis_heading,
                      body_axis_pitch, quat_from_axis_angle, quat_from_heading_pitch,
                      quat_mul, quat_normalize)
+
+
+class FlightRun:
+    """一次飞行仿真的产出。
+
+    trace : FlightTrace —— 最小向量接口（渲染程序只消费它）；
+    tele  : dict[str, ndarray] —— 扩展遥测（图表 / CSV / 诊断用）。
+    """
+
+    __slots__ = ("trace", "tele")
+
+    def __init__(self, trace: FlightTrace, tele: dict):
+        self.trace = trace
+        self.tele = tele
 
 
 class SimConfig:
@@ -51,17 +71,31 @@ class SimConfig:
 
         self.def_limit = 0.9
         self.stop_alt = 1.5           # 触地（视为着陆）
+        self.hard_landing_sink = 6.0  # 触地时下沉率阈值 (m/s)：超过视为“重着陆”（俯冲砸地）
         self.max_roll_rad = np.radians(75.0)   # 超过视为失控
+
+        # ---- 尾翼（学生设定偏角，°）----
+        # 语义：elevator_deg > 0 = 平尾上抬（拉杆/抬头方向）；rudder_deg > 0 = 机头右偏。
+        # 升降舵非 0 时进入“手动尾翼模式”：脱离空速保持回路（固定配平 + 俯仰阻尼），
+        # 让“上下翻尾翼 → 俯仰/速度”的后果直接可见（含失速、俯冲等失败案例）。
+        self.elevator_deg = 0.0
+        self.rudder_deg = 0.0
+        self.tail_deg_to_def = 1.0 / 30.0   # 舵面角度(°) -> 无量纲 def 的线性换算
 
 
 class FlightController:
-    """空速保持 + 机翼水平 + 协调（去侧滑）。
+    """空速保持 + 机翼水平 + 协调（去侧滑）；支持“手动尾翼”模式。
 
     物理符号说明（已在 aero 中按“def>0 增大该面迎角”定义）：
       - 升降舵 def>0：平尾升力↑(尾上抬) -> 低头力矩（推杆）
       - 副翼   def>0：右翼(starboard)迎角↑ -> 左横滚
-      - 方向舵 def>0：垂尾向右翼方向出力 -> 偏航
+      - 方向舵 def>0：机头右偏（符号经数值验证）
     控制器使用与上述一致的物理符号；具体极性与负反馈方向经数值验证后取定。
+
+    尾翼模式（SimConfig.elevator_deg / rudder_deg，学生参数）：
+      - 升降舵 ≈ 0（默认）：自动空速保持（既有行为）；
+      - 升降舵 ≠ 0：手动模式 = 学生固定偏角 + 俯仰阻尼（不再保速）；
+      - 方向舵：学生固定偏角直接叠加（默认 0 时不改变原有行为）。
     """
 
     def __init__(self, cfg: SimConfig):
@@ -97,15 +131,22 @@ class FlightController:
                 bank_cmd = np.radians(cfg.bank_cmd_deg) * np.sin(
                     2.0 * np.pi * t / max(cfg.sine_period, 1e-3))
 
-        # 俯仰通道：def>0=推杆(低头)；V 高->抬头减速->def<0
-        elevator = -cfg.gain_speed * (V - cfg.V_ref) - cfg.gain_dspeed * dV
-        elevator += cfg.gain_pitch * (0.0 - pitch)
-        elevator += cfg.gain_pitch_damp * q          # q>0 抬头 -> 加推杆阻尼
+        # ---- 升降舵：自动保速 / 手动尾翼两种模式 ----
+        if abs(cfg.elevator_deg) > 1e-9:
+            # 手动尾翼模式：学生固定偏角（elevator_deg>0=上抬→抬头）＋俯仰阻尼
+            elevator = (-cfg.elevator_deg * cfg.tail_deg_to_def
+                        + cfg.gain_pitch_damp * q)
+        else:
+            # 俯仰通道（自动保速）：def>0=推杆(低头)；V 高->抬头减速->def<0
+            elevator = -cfg.gain_speed * (V - cfg.V_ref) - cfg.gain_dspeed * dV
+            elevator += cfg.gain_pitch * (0.0 - pitch)
+            elevator += cfg.gain_pitch_damp * q          # q>0 抬头 -> 加推杆阻尼
         # 横滚通道：仿真验证 def>0(右翼α升)会左滚->bank↓
         # 于是用 (bank-bank_cmd) 作误差即可负反馈：bank 高时给正副翼把它压回目标
         aileron = cfg.gain_roll * (bank - bank_cmd) + cfg.gain_roll_rate * dbank
-        # 方向舵：去侧滑 + 偏航阻尼（符号经数值验证）
-        rudder = -cfg.gain_beta * beta - cfg.gain_yaw_rate * (-wb[1])
+        # 方向舵：学生固定偏角 + 去侧滑 + 偏航阻尼（默认偏角 0 时与原有行为一致）
+        rudder = (cfg.rudder_deg * cfg.tail_deg_to_def
+                  - cfg.gain_beta * beta - cfg.gain_yaw_rate * (-wb[1]))
 
         self._prev_V = V
         self._prev_bank = bank
@@ -137,8 +178,8 @@ def launch_pose(cfg: SimConfig):
     return pos, q, vel, np.zeros(3)
 
 
-def run_flight(backend, glider: Glider, cfg: SimConfig):
-    """执行一次飞行，返回遥测 dict。"""
+def run_flight(backend, glider: Glider, cfg: SimConfig) -> FlightRun:
+    """执行一次飞行，返回 FlightRun（最小向量接口 trace + 扩展遥测 tele）。"""
     pos0, q0, vel0, om0 = launch_pose(cfg)
     backend.reset(pos0, q0, vel0, om0)
     ctrl = FlightController(cfg)
@@ -146,6 +187,7 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
     tele = {k: [] for k in
             ("t", "pos", "quat", "vel", "alpha", "beta", "V", "CL", "CD",
              "sink", "elevator", "aileron", "rudder", "alt", "bank", "pitch")}
+    trace_rows = []          # 最小向量接口的逐帧状态：[t, pos, quat, vel]
 
     dt = cfg.dt
     n_steps = int(cfg.sim_time / dt)
@@ -164,6 +206,7 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
         tele["pos"].append(s.pos.copy())
         tele["quat"].append(s.quat.copy())
         tele["vel"].append(s.vel.copy())
+        trace_rows.append((i * dt, *s.pos, *s.quat, *s.vel))
         for k in ("alpha", "beta", "V", "CL", "CD", "sink"):
             tele[k].append(diag[k])
         for k in ("elevator", "aileron", "rudder"):
@@ -173,7 +216,9 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
         tele["pitch"].append(float(np.degrees(body_axis_pitch(s.quat))))
 
         if s.pos[1] <= cfg.stop_alt:
-            reason = "landed"
+            # 触地下沉率过大 → 重着陆（俯冲砸地，用于“推杆过度”等失败案例的明确标识）
+            reason = ("hard_landing" if (-float(s.vel[1])) > cfg.hard_landing_sink
+                      else "landed")
             break
         if abs(body_axis_bank(s.quat)) > cfg.max_roll_rad:
             reason = "crashed(roll)"
@@ -189,7 +234,20 @@ def run_flight(backend, glider: Glider, cfg: SimConfig):
     out = {k: np.asarray(v) for k, v in tele.items()}
     out["reason"] = reason
     out["steps"] = len(out["t"])
-    return out
+
+    # 最小向量接口：只带运动状态；气动系数作为可选扩展通道（HUD 显示 L/D 用）
+    trace = FlightTrace(
+        np.asarray(trace_rows, dtype=float),
+        meta={
+            "backend": getattr(backend, "name", "unknown"),
+            "reason": reason,
+            "steps": int(out["steps"]),
+            "dt_s": dt,
+            "maneuver": cfg.maneuver,
+        },
+        extras={"CL": out["CL"], "CD": out["CD"]},
+    )
+    return FlightRun(trace, out)
 
 
 def flight_summary(tele) -> dict:

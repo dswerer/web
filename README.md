@@ -60,8 +60,9 @@ project/
 │       ├── hooks/              # 通知等共享状态 Hooks
 │       └── store/              # 认证与通知状态
 ├── simulation/                  # 滑翔机仿真（生产依赖，不再使用 test_ 前缀目录）
-│   ├── glider/                  # 滑翔机气动仿真（Python）：aircraft/aero/sim_core/render/plot_flight
-│   │   └── sim_service.py       # 供平台后端 spawn 调用的 headless 服务（结果图 + MP4 回放）
+│   ├── glider/                  # 滑翔机气动仿真（Python）：aircraft/aero/sim_core/plot_flight
+│   │   ├── sim_service.py       # 供平台后端 spawn 调用的 headless 服务（图表 + 逐帧轨迹数据）
+│   │   └── RENDER_API.md        # 渲染接入指南（前端 three.js 回放；轨迹接口 / ftrc 格式）
 │   ├── novaphy-0.4.0-cpu-cp311-linux-x86_64/  # ⚠️ novaPhy 交付包：需自行放入，不入库（见 simulation/README.md）
 │   ├── docker/                  # novaPhy Docker 运行环境（构建前需先把交付包放到 simulation/）
 │   └── wsl_setup.sh             # novaPhy 环境准备脚本（WSL / Ubuntu 服务器通用）
@@ -207,7 +208,7 @@ Vite 已配置 `/api` 与 `/uploads` 代理到 `http://localhost:3000`，前端�
 
 ```powershell
 python --version      # 必须能直接运行；若是 Microsoft Store 存根会弹应用商店，需先装真 Python
-pip install numpy matplotlib imageio imageio-ffmpeg
+pip install -r simulation\glider\requirements.txt    # numpy / matplotlib / Pillow
 ```
 
 ##### 方案二：WSL —— 真 novaPhy
@@ -239,7 +240,7 @@ GLIDER_BACKEND=reference
 # GLIDER_BACKEND=novaphy
 ```
 
-学生登录后进入 `/glider`：填机翼上反角、重心、初始速度 → 开始试飞 → 等待约 30 秒~2 分钟（真 novaPhy 渲染全程回放较慢），可查看 3D 航迹、遥测曲线与固定机位的 MP4 飞行回放。结果文件保存在 `backend/uploads/glider/<id>/`。非学生角色进入该页面为只读视图：**管理员可查看全部试飞记录，其余角色仅可见本人记录（通常为空）**。引擎不可用时（能力探测失败）前端“开始试飞”按钮置灰，直接调用接口会得到 503 快速失败。原理与环境变量详见“滑翔机模拟（学生科创）”章节。
+学生登录后进入 `/glider`：调整机翼（上反角 / 面积）、重心、投放速度、整机质量与两只尾翼偏角 → 开始试飞 → 等待约 20~60 秒，可查看 3D 航迹与遥测曲线；每帧位置 / 姿态数据同步入库，供前端基于轨迹接口渲染飞行回放（接入指南见 `simulation/glider/RENDER_API.md`，仓库内置样例轨迹文件）。结果文件保存在 `backend/uploads/glider/<id>/`。非学生角色进入该页面为只读视图：**管理员可查看全部试飞记录，其余角色仅可见本人记录（通常为空）**。引擎不可用时（能力探测失败）前端“开始试飞”按钮置灰，直接调用接口会得到 503 快速失败。原理与环境变量详见“滑翔机模拟（学生科创）”章节。
 
 ## 常用命令
 
@@ -396,7 +397,7 @@ GLIDER_BACKEND=reference
 | 学生 | `/api/students` | 用户、学校、班级和批量导入 |
 | 作品 | `/api/works` | 上传、查看、导师评审和版本管理 |
 | 档案 | `/api/archives` | 成长档案、反思、评价和成长记录 |
-| 滑翔机 | `/api/glider` | 提交参数、运行模拟、查看试飞记录与结果图/视频 |
+| 滑翔机 | `/api/glider` | 提交参数、运行模拟、查看试飞记录、结果图与逐帧轨迹数据 |
 | 反馈 | `/api/feedback` | 提交、列表、详情、回复、状态、优先级、统计和私有附件 |
 | 通知 | `/api/notifications` | 列表、最近通知、未读数、详情、已读/未读和隐藏操作 |
 | 健康检查 | `/api/health` | 服务状态 |
@@ -511,7 +512,8 @@ GLIDER_BACKEND=reference
 - SQLite 共享内存文件：`backend/database/pbl_platform.db-shm`
 - 作品与课程资源上传文件：`backend/uploads/`（不公开静态托管）
 - 课程回放视频：`backend/uploads/course-replays/`（经签名 URL 鉴权流式播放）
-- 滑翔机模拟结果（3D 航迹图 / 遥测图 / CSV / MP4 回放）：`backend/uploads/glider/`
+- 滑翔机模拟结果（3D 航迹图 / 遥测图 / CSV / flight_trace 轨迹文件）：`backend/uploads/glider/`
+- 滑翔机每帧轨迹数据（最小向量接口 ftrc，供接口与前端 three.js 读取）：数据库 `glider_trajectories` 表
 - 文件清理失败队列：`backend/uploads/.cleanup-queue.json`（删除文件/目录失败时记录，可由运维手动重试）
 - 私有反馈附件：`backend/private_uploads/feedback/`
 - 环境变量：`backend/.env`
@@ -520,21 +522,31 @@ GLIDER_BACKEND=reference
 
 ## 滑翔机模拟（学生科创）
 
-学生可在 `/glider`（工作台卡片或侧边栏“滑翔机模拟实验室”）提交三组参数，后端用**真实气动仿真**试飞：
+学生可在 `/glider`（工作台卡片或侧边栏“滑翔机模拟实验室”）提交多组参数，后端用**真实气动仿真**试飞：
 
 - 机翼上反角（°）—— 越大横向越稳；
 - 重心位置（沿机头方向前移量，m）—— 靠前更稳但滑翔差，靠后易失速翻滚；
-- 初始投放速度（m/s）—— 需高于失速（约 20 m/s）。
+- 初始投放速度（m/s）—— 需高于失速（约 20 m/s）；
+- 机翼面积（m²）—— 按比例缩放（展弦比不变），越大升力越大、飞得越慢越久；
+- 整机质量（kg）—— 越重飞得越快、下沉越快；
+- 水平尾翼偏角（°）—— 正值上抬（抬头）、负值下压（俯冲）；非 0 时进入“手动尾翼模式”；
+- 垂直尾翼偏角（°）—— 正值机头右偏、负值左偏，飞机会转弯。
 
 提交前需选择**实验课程**（已报名且已发布的课程，可选关联课时），试飞记录落库时携带 `course_id/lesson_id` 供按课程授权与归档。
 
-数据链路：前端提交 → `POST /api/glider/simulate`（限学生）→ 后端 `spawn` 调用
-`simulation/glider/sim_service.py` → 物理积分 → 输出 `backend/uploads/glider/<id>/`
-（`summary.json`、CSV、3D 航迹图、遥测图、`flight_replay.mp4` 回放）→ 前端轮询详情、经鉴权接口拉取结果图与视频播放。**无需** nginx 额外暴露 `/uploads`。
+数据链路（仿真只产出数据，渲染与仿真解耦）：
+1. 前端提交 → `POST /api/glider/simulate`（限学生）→ 后端 `spawn` 调用 `simulation/glider/sim_service.py` 完成物理积分；
+2. 模拟**只产出数据**：每帧位置/姿态写入 `flight_trace.npz`（Python 生态）与 `flight_trace.bin`（ftrc 二进制），
+   连同 `summary.json`、CSV、3D 航迹图、遥测图存于 `backend/uploads/glider/<id>/`；
+3. 后端把 ftrc 轨迹**存入数据库**（`glider_trajectories` 表，zlib 压缩）；
+4. 接口下发：详情 `GET /api/glider/simulations/:id`、每帧轨迹 `GET /api/glider/simulations/:id/trace`
+   （`?format=json` 帧数组；`?format=bin` ftrc 二进制）。
+前端轮询详情后展示图表；**飞行回放由前端基于逐帧轨迹数据渲染**（three.js 接入中，接口与解析指南见
+`simulation/glider/RENDER_API.md`，仓库内置样例轨迹文件）。**无需** nginx 额外暴露 `/uploads`。
 
 试飞记录权限（决策 D-7）：管理员可见全部；执行导师可见自己课程（创建或授课）学生的记录；学生仅本人；教师/新媒体无权限。遗留无课程关联的记录仅管理员与本人可见。
 
-任务可靠性：后端启动时会清扫历史遗留的 `running` 记录（服务中断不再永久占满并发）；提交前先做课程报名与课时归属校验，再经 `sim_service.py --probe` 做**真实引擎探测**（探测 Python/numpy/matplotlib/ffmpeg/novaPhy 与输出目录可写性，结果缓存 60 秒并有防双响应守卫），不可用快速失败 503；单次模拟有硬超时（`GLIDER_TIMEOUT` + 120 秒缓冲，超时强制终止）；前端轮询超过 5 分钟未完成会提示疑似卡住并停止轮询。
+任务可靠性：后端启动时会清扫历史遗留的 `running` 记录（服务中断不再永久占满并发）；提交前先做课程报名与课时归属校验，再经 `sim_service.py --probe` 做**真实引擎探测**（探测 Python/numpy/matplotlib/novaPhy 与输出目录可写性，结果缓存 60 秒并有防双响应守卫），不可用快速失败 503；单次模拟有硬超时（`GLIDER_TIMEOUT` + 120 秒缓冲，超时强制终止）；前端轮询超过 5 分钟未完成会提示疑似卡住并停止轮询。
 
 ### 引擎双后端（本地 = 服务器一致）
 
@@ -562,7 +574,7 @@ cd simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64 && sha256sum -c SHA256SUMS
 
 ```powershell
 python --version      # 确认不是 Microsoft Store 存根
-pip install numpy matplotlib imageio imageio-ffmpeg
+pip install numpy matplotlib
 ```
 
 **2) WSL / Ubuntu·Debian 服务器：真 novaPhy**：
@@ -576,7 +588,7 @@ cd <项目根目录> && sudo bash simulation/wsl_setup.sh
 ```
 
 脚本装到 `/opt/novaphy`，结尾打印 `ALL_DONE`；它会把交付包里的 wheel 与
-`numpy matplotlib Pillow imageio imageio-ffmpeg` 一并装进 venv（viewer 依赖可选、失败不中断）。
+`numpy matplotlib Pillow` 一并装进 venv（viewer 依赖可选、失败不中断）。
 若发行版不是 Ubuntu 24.04+，脚本会在预检阶段直接报错退出并告知原因。
 
 **3) RHEL / Alibaba Cloud Linux 服务器**（脚本依赖 apt，不适用，改手工装）：
@@ -584,14 +596,13 @@ cd <项目根目录> && sudo bash simulation/wsl_setup.sh
 ```bash
 sudo dnf install -y python3.11 python3.11-devel gcc gcc-c++ make
 sudo python3.11 -m venv /opt/novaphy
-sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow imageio imageio-ffmpeg
+sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow
 sudo /opt/novaphy/bin/pip install simulation/novaphy-0.4.0-cpu-cp311-linux-x86_64/*.whl
 /opt/novaphy/bin/python -c "import novaphy; print('novaPhy OK')"
 ```
 
 > 若 venv 由 root 创建，后续补装依赖需带 `sudo`，例如
-> `sudo /opt/novaphy/bin/pip install imageio imageio-ffmpeg`。
-> 缺失 `imageio-ffmpeg` 时视频自动跳过（`files.video=null`），不影响模拟结果。
+> `sudo /opt/novaphy/bin/pip install numpy matplotlib Pillow`。
 
 ### 相关环境变量（均写入 `backend/.env` 或生产 `EnvironmentFile`）
 
@@ -600,17 +611,14 @@ GLIDER_PYTHON=python                      # 解释器（见上表三态）
 GLIDER_BACKEND=reference                  # auto / novaphy / reference
 GLIDER_MAX_ACTIVE=2                       # 同时运行模拟上限
 GLIDER_TIMEOUT=100                        # 单次最长仿真秒数（150m 稳定滑翔约 70s 才落地）
-GLIDER_VIDEO=1                            # 0 关闭 MP4 回放
-GLIDER_VIDEO_FPS=10                       # 回放帧率
-GLIDER_VIDEO_MAX=300                      # 回放时长上限秒（默认不截断，覆盖全程含着陆）
 GLIDER_RETENTION_DAYS=0                   # error 状态结果保留天数；0=不自动清理（决策 E-6）
 DISK_WARN_PERCENT=85                      # doctor.sh 磁盘使用率告警阈值
 ```
 
 ### 结果说明
 
-- 结果标签：`正常滑翔` / `成功着陆` / `横滚失控坠毁` / `失速下坠` / `超时结束`，对应引擎结束原因（`ok`/`landed`/`crashed(roll)`/`stalled/slow`/`timedout`…）。
-- 视频为**固定世界机位**，视频与 3D 航迹图都是“高度朝上、地面在正下方”的世界视角（全航程可见；长航程时航迹图竖直方向会按显示比例拉伸，拉伸倍数已在图内标注）；飞机盒体为便于全景观察而放大示意；真实气动数据看 HUD、遥测曲线与 3D 航迹图。
+- 结果标签：`正常滑翔` / `成功着陆` / `重着陆（触地过快）` / `横滚失控坠毁` / `失速下坠` / `超时结束`，对应引擎结束原因（`ok`/`landed`/`hard_landing`/`crashed(roll)`/`stalled/slow`/`timedout`）。
+- 3D 航迹图为“高度朝上、地面在正下方”的世界视角（全航程可见；长航程时竖直方向按显示比例拉伸，拉伸倍数已在图内标注）；真实气动数据看遥测曲线与 3D 航迹图。
 - 引擎默认关闭横滚/偏航自动保持（考察上反角/重心对被动稳定性的影响）；典型稳定组合例如上反角 6°、重心 +0.1 m、速度 36 m/s 可平稳着陆约 70 s。
 
 ## 已知限制
@@ -650,7 +658,7 @@ sudo apt-get update && sudo apt-get install -y build-essential python3 nginx sql
 sudo dnf install -y gcc gcc-c++ make python3 nginx
 ```
 
-- 滑翔机引擎 Python 环境（仅需要该功能时）：见“滑翔机模拟（学生科创）”章节，例如 `/opt/novaphy`（Python 3.11 + novaphy wheel + numpy/matplotlib/imageio-ffmpeg）。
+- 滑翔机引擎 Python 环境（仅需要该功能时）：见“滑翔机模拟（学生科创）”章节，例如 `/opt/novaphy`（Python 3.11 + novaphy wheel + numpy/matplotlib）。
 
 ### 1. 快速一键部署（测试/演示环境）
 
@@ -868,7 +876,7 @@ GLIDER_BACKEND=auto
 
 - 若忘配这两项，后端会回退 `python3` + 参考后端：**能跑但不是真 novaPhy**，`doctor.sh` 会给出 WARN；
 - 若显式设了 `GLIDER_BACKEND=novaphy` 而解释器不可用，`doctor.sh` 直接 **FAIL**，避免蒙混过关；
-- 模拟结果图/视频写入 `UPLOAD_PATH/glider/<id>/`（即数据盘），随备份一起持久化。
+- 模拟结果图与轨迹文件写入 `UPLOAD_PATH/glider/<id>/`（即数据盘），随备份一起持久化。
 
 ## 账号权限整改进度
 

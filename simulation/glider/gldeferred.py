@@ -1,7 +1,7 @@
 """gldeferred.py — GLB 模型 + 延迟渲染（deferred shading）渲染途径。
 
-与 :mod:`render`（matplotlib 路径）并列，产出同一种 ``flight_replay.mp4``；
-``sim_service.py --renderer gl|mpl`` 切换，matplotlib 保留为兜底与对拍。
+原与 :mod:`render`（matplotlib 路径）并列；服务端 MP4 流程下线后，本途径保留为
+``--gl-preview`` 单帧预览与 ``--gl-live`` 实时窗口（由 ``sim_service.py`` 接入）。
 
 管线与解耦架构
 --------------
@@ -20,15 +20,17 @@
 
 坐标与姿态约定（本项目最关键的部分）
 ------------------------------------
-- 世界系 Y-up；机体系 x 前 / y 上 / z 右翼（与 ``aircraft.py`` / ``render.py`` 一致）；
+- 世界系 Y-up；机体系 x 前 / y 上 / z 右翼（与 ``aircraft.py`` 一致）；
 - 姿态是纯几何搬运：``world = T(pos)·R(quat)·S(k) @ v_fit``，四元数直接取
   ``tele["quat"][i]``（xyzw，物理积分产生），渲染端不做任何姿态计算；
 - 模型轴转换 ``R_conv`` 在 ``gl_mesh.fit_parts`` 阶段**烘焙进顶点**，因此模型矩阵
   不含任何隐藏旋转——用 :func:`pose_check` 可端到端断言渲染姿态 == 物理姿态（<1e-9）。
 
 不重复造轮子：矩阵运算走 pyGLM（经 :mod:`gl_math` 适配），GLB 解析走 trimesh
-（经 :mod:`gl_mesh`），视频编码走 imageio-ffmpeg，HUD 字体走 matplotlib 自带
-DejaVuSansMono。相机/取景算法沿用 matplotlib 路径的已验证实现。
+（经 :mod:`gl_mesh`），视频编码走 imageio-ffmpeg（可选依赖，缺失仅影响 VideoSink），
+HUD 字体走 matplotlib 自带 DejaVuSansMono。相机/取景算法沿用原 matplotlib 路径的
+已验证实现；相关工具函数（``_hud_text`` / ``_flight_view_bounds``）已内联至本模块，
+不再依赖已移除的 ``render.py``。
 """
 
 from __future__ import annotations
@@ -41,8 +43,48 @@ import numpy as np
 from gl_math import (gl_bytes, mat4_from_pos_quat_scale, mat4_invert, mat4_look_at,
                      mat4_mul, mat4_perspective, transform_points)
 from gl_mesh import Mesh, axis_conv, fit_parts, load_glb_parts, load_obj, procedural_mesh
-from render import _flight_view_bounds, _hud_text
 from spatial import quat_from_axis_angle, quat_rotate, quat_to_matrix
+
+
+# ------------------------------------------------------------------
+# HUD 文本 / 取景范围（原 render.py 工具函数；服务端视频线移除后内联，保持本模块自包含）
+# ------------------------------------------------------------------
+
+def _hud_text(tele, idx):
+    """把当前状态拼成 HUD 字符串（英文，避免 CJK 字体问题）。"""
+    try:
+        t = tele["t"][idx]
+        V = tele["V"][idx]
+        alt = tele["alt"][idx]
+        sink = tele["sink"][idx]
+        alpha = np.degrees(tele["alpha"][idx])
+        cl = tele["CL"][idx]
+        cd = max(tele["CD"][idx], 1e-4)
+        ld = cl / cd
+        return (
+            f"t = {t:5.1f} s    h = {alt:6.0f} m    V = {V:5.1f} m/s\n"
+            f"AoA = {alpha:+5.1f} deg    sink = {sink:5.2f} m/s   L/D = {ld:5.1f}"
+        )
+    except Exception:
+        return ""
+
+
+def _flight_view_bounds(tele, pad_frac=0.18, min_alt=0.0):
+    """固定机位取景范围：覆盖整段飞行走廊（起点到落点/终点），含高度。"""
+    pos = np.asarray(tele["pos"])
+    xs = pos[:, 0]; ys = pos[:, 1]; zs = pos[:, 2]
+    x0, x1 = float(xs.min()), float(xs.max())
+    z0, z1 = float(zs.min()), float(zs.max())
+    dx = max(x1 - x0, 1e-6); dz = max(z1 - z0, 1e-6)
+    if dx < 60.0:
+        c = (x0 + x1) / 2; x0 = c - 60; x1 = c + 60; dx = 120.0
+    if dz < 60.0:
+        c = (z0 + z1) / 2; z0 = c - 60; z1 = c + 60; dz = 120.0
+    x0 -= dx * pad_frac; x1 += dx * pad_frac
+    z0 -= dz * pad_frac; z1 += dz * pad_frac
+    y1 = max(float(ys.max()) * 1.15 + 5.0, 45.0)
+    return x0, x1, min_alt, y1, z0, z1
+
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 GLSHADER_DIR = os.path.join(_MODULE_DIR, "glshaders")
@@ -574,7 +616,7 @@ def _trail_colors(alt, alt_lo: float, alt_hi: float, mode: str = "alt") -> np.nd
 def fixed_camera(bounds, aspect, fovy=np.radians(45.0), elev_deg=8.0, azim_deg=-90.0):
     """固定机位：取景覆盖整条飞行走廊。
 
-    ``bounds`` 来自 ``render._flight_view_bounds``：(x0, x1, alt0, alt1, z0, z1)。
+    ``bounds`` 来自本模块 ``_flight_view_bounds``：(x0, x1, alt0, alt1, z0, z1)。
     注意方位角**镜像**：mpl 把世界 ``(x, alt, z)`` 放进 mpl ``(x, z, alt)`` 布局
     （行列式 -1 的左手嵌入），同一个 ``azim`` 在 mpl 画面上的左右与世界系相反；
     要让 GL 画面里"飞机沿 +x 由左向右飞"（与 mpl 固定机位一致），正弦项取反。
@@ -968,16 +1010,17 @@ def _playback(tele, renderer: DeferredRenderer, sink: FrameSink, *,
 
 
 # ---------------------------------------------------------------------------
-# 公开入口（签名风格对齐 render.make_video）
+# 公开入口（签名风格沿用原 render.make_video）
 # ---------------------------------------------------------------------------
 
 def make_video_gl(tele, glider, out_path: str, fps: float = 15, start: float = 0.0,
                   end=None, cfg_view=None, progress=print, hud: bool = False,
                   camera: str = "fixed", size=(1280, 720), codec: str = "libx264",
                   quality: int = 6, cfg: GLConfig | None = None) -> str:
-    """OpenGL 延迟渲染飞行回放 MP4（取帧/帧率/编码与 ``render.make_video`` 一致）。
+    """OpenGL 延迟渲染飞行回放 MP4（取帧/帧率/编码沿用原 ``render.make_video`` 约定）。
 
-    无法创建 GL 上下文 / 缺少编码依赖时抛异常，由调用方（sim_service）回退 mpl。
+    无法创建 GL 上下文 / 缺少编码依赖时抛异常；当前服务端流程未调用本函数
+    （保留供手动 GLB 渲染导出），``--gl-preview`` / ``--gl-live`` 不受影响。
     """
     cfg = cfg or GLConfig()
     try:

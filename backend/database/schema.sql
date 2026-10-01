@@ -580,6 +580,10 @@ CREATE TABLE IF NOT EXISTS glider_simulations (
   cg_x REAL NOT NULL DEFAULT 0,
   speed REAL NOT NULL DEFAULT 36,
   alt REAL NOT NULL DEFAULT 150,
+  wing_area REAL NOT NULL DEFAULT 17.5,   -- 机翼面积 (m²)，相对基准 17.5 等比缩放
+  mass REAL NOT NULL DEFAULT 420,         -- 整机质量 (kg)，课程组“重力”参数
+  elevator_deg REAL NOT NULL DEFAULT 0,   -- 水平尾翼偏角 (°)，>0 上抬（抬头）
+  rudder_deg REAL NOT NULL DEFAULT 0,     -- 垂直尾翼偏角 (°)，>0 机头右偏
   status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','success','error')),
   state TEXT,
   glide_time REAL,
@@ -590,6 +594,18 @@ CREATE TABLE IF NOT EXISTS glider_simulations (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- 滑翔机轨迹数据（每帧位置/姿态；最小向量接口 ftrc 格式，zlib 压缩存储）
+-- 模拟产物 flight_trace.bin 入库；接口读库供前端（three.js）与独立渲染程序使用。
+CREATE TABLE IF NOT EXISTS glider_trajectories (
+  simulation_id INTEGER PRIMARY KEY,
+  format TEXT NOT NULL DEFAULT 'ftrc-f32/1',
+  frame_count INTEGER NOT NULL,
+  state_dim INTEGER NOT NULL,
+  frames BLOB NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (simulation_id) REFERENCES glider_simulations(id) ON DELETE CASCADE
 );
 
 -- 索引

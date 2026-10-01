@@ -35,20 +35,29 @@ def air_density(altitude_m: float) -> float:
 # 滑翔机参数
 # ---------------------------------------------------------------------------
 class Glider:
-    def __init__(self, *, dihedral_deg: float = 0.0, cg_x: float = 0.0):
+    def __init__(self, *, dihedral_deg: float = 0.0, cg_x: float = 0.0,
+                 wing_S: float = 17.5, mass: float = 420.0):
         # ---- 用户可调布局参数 ----
         self.dihedral_deg = float(dihedral_deg)   # 机翼上反角 (°)，>0 = 两翼尖上翘
         self.cg_x = float(cg_x)                   # 重心沿机体 x 前移量 (m)，>0 = 重心更靠前
+        # 主翼总面积（平方米）：相对基准 17.5 按比例缩放（翼展与弦长同步 ×sqrt(S/17.5)，展弦比不变）
+        self.wing_S = float(wing_S)
+        if not (4.0 <= self.wing_S <= 60.0):
+            raise ValueError(f"wing_S 超出合理范围 [4, 60] 平方米: {self.wing_S}")
 
         # ---- 总体质量 / 惯量（kg, kg*m^2）----
-        self.mass = 420.0
-        # 机体系主惯量（x 滚转 / y 俯仰 / z 偏航 由布局决定）
-        self.I_body = np.diag([2100.0, 3300.0, 4000.0])
+        self.mass = float(mass)                   # 课程组的“重力”参数 = 整机质量
+        if not (50.0 <= self.mass <= 2000.0):
+            raise ValueError(f"mass 超出合理范围 [50, 2000] kg: {self.mass}")
+        # 机体系主惯量（x 滚转 / y 俯仰 / z 偏航 由布局决定）；随质量一阶等比缩放
+        self.I_body = np.diag([2100.0, 3300.0, 4000.0]) * (self.mass / 420.0)
         self.I_body_inv = np.linalg.inv(self.I_body)
 
         # ---- 机翼（拆成左右两个半面）----
-        span = 16.0            # 翼展
-        wing_S = 17.5          # 总面积
+        # 按比例缩放：保持展弦比不变 → 翼展与弦长同步 ×sqrt(S/17.5)
+        self._wing_scale = float(np.sqrt(self.wing_S / 17.5))
+        span = 16.0 * self._wing_scale   # 翼展
+        wing_S = self.wing_S             # 总面积
         wing_AR = span ** 2 / wing_S
         wing_a0 = 2.0 * np.pi * wing_AR / (wing_AR + 2.0)   # 3D 升力线斜率
 
@@ -139,7 +148,12 @@ class Glider:
     # 渲染部件（局部坐标系 box：半宽 hx,hy,hz + 颜色）—— 两个后端共用
     # ------------------------------------------------------------------
     def parts(self):
-        """返回可渲染部件列表：(name, 机体系中心, 半尺寸, rgba)。"""
+        """返回可渲染部件列表：(name, 机体系中心, 半尺寸, rgba)。
+
+        机翼/小翼尺寸随 wing_S 等比缩放（与气动面同一口径），
+        使视频里能看出不同机翼面积的布局差异。
+        """
+        s = self._wing_scale
         hs = 0.30 * self.length / 2
         return [
             # 机身
@@ -148,14 +162,14 @@ class Glider:
             # 座舱
             ("cockpit", np.array([1.4, 0.18, 0.0]),
              np.array([0.9, 0.22, 0.32]), (0.25, 0.55, 0.95, 1.0)),
-            # 机翼（整体一块便于显示，两侧对称）
+            # 机翼（整体一块便于显示，两侧对称；尺寸随 wing_S 缩放）
             ("wing", np.array([0.1, 0.0, 0.0]),
-             np.array([1.6, 0.035, 8.0]), (0.85, 0.45, 0.12, 1.0)),
+             np.array([1.6 * s, 0.035, 8.0 * s]), (0.85, 0.45, 0.12, 1.0)),
             # 翼尖小翼（视觉效果）
-            ("wingtip_l", np.array([0.1, 0.28, 7.55]),
-             np.array([0.7, 0.25, 0.06]), (0.85, 0.45, 0.12, 1.0)),
-            ("wingtip_r", np.array([0.1, 0.28, -7.55]),
-             np.array([0.7, 0.25, 0.06]), (0.85, 0.45, 0.12, 1.0)),
+            ("wingtip_l", np.array([0.1, 0.28, 7.55 * s]),
+             np.array([0.7 * s, 0.25, 0.06]), (0.85, 0.45, 0.12, 1.0)),
+            ("wingtip_r", np.array([0.1, 0.28, -7.55 * s]),
+             np.array([0.7 * s, 0.25, 0.06]), (0.85, 0.45, 0.12, 1.0)),
             # 平尾
             ("tailplane", np.array([-4.8, 0.05, 0.0]),
              np.array([0.7, 0.03, 1.6]), (0.90, 0.30, 0.30, 1.0)),

@@ -20,9 +20,10 @@ router.post('/simulate', requireRole('student'), controller.simulate);
 // 引擎能力探测（提交前检查，避免课上才发现环境未就绪）
 router.get('/capabilities', controller.capabilities);
 
-// 我的模拟记录 / 详情 / 签名播放地址
+// 我的模拟记录 / 详情 / 签名播放地址 / 每帧轨迹数据（供前端 three.js 直读）
 router.get('/simulations', controller.list);
 router.get('/simulations/:id', controller.detail);
 router.get('/simulations/:id/stream-url', controller.streamUrl);
+router.get('/simulations/:id/trace', controller.trace);
 
 module.exports = router;

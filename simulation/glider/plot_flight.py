@@ -58,7 +58,7 @@ def plot_flight(tele, out_png: str, title="Glider flight telemetry (NovaPhy aero
 def _zup(v):
     """世界坐标 (x, 高度, z) -> matplotlib 3D 坐标 (x, z, 高度)。
 
-    与 render.py 固定机位（draw_world_frame）保持同一约定：mpl 的 z 轴（屏幕竖直
+    与前端回放（three.js）保持同一世界坐标约定：mpl 的 z 轴（屏幕竖直
     方向）是高度，地面 = 高度 0 的水平面，铺在画面下方。
     """
     return np.asarray(v, dtype=float)[..., [0, 2, 1]]

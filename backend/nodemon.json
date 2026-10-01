@@ -1,0 +1,14 @@
+{
+  "watch": [
+    "app.js",
+    "config",
+    "constants",
+    "controllers",
+    "helpers",
+    "middleware",
+    "routes",
+    "services",
+    "database"
+  ],
+  "ext": "js,mjs,cjs,json"
+}
