@@ -469,8 +469,9 @@ export default function GliderSimulator() {
                     </Row>
 
                     {/* 3D 飞行回放：前端基于逐帧轨迹数据实时渲染（three.js），
-                        数据接口 GET /api/glider/simulations/:id/trace，指南见 simulation/glider/RENDER_API.md */}
-                    <FlightReplay3D simId={viewing.id} />
+                        数据接口 GET /api/glider/simulations/:id/trace，指南见 simulation/glider/RENDER_API.md
+                        key：切换记录时重建组件，使内部状态回到初值（替代 effect 内同步 setState 重置） */}
+                    <FlightReplay3D key={viewing.id} simId={viewing.id} />
 
                     {/* 旧版后端生成的 MP4 回放（仅早期记录有；新试飞由上方 3D 回放替代） */}
                     {img.video && (

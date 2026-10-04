@@ -45,14 +45,10 @@ export default function FlightReplay3D({ simId }) {
   const [light, setLight] = useState('default');
   const [lights, setLights] = useState([]);
 
+  // 记录切换由父级 <FlightReplay3D key={simId}> 重建组件完成状态重置，
+  // 因此这里只负责加载数据；setState 一律发生在异步回调里（不在 effect 体内同步调用）
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setError(null);
-    playingRef.current = false;
-    setPlaying(false);
-    setTime(0);
-    setLights([]);
     (async () => {
       try {
         // client 响应拦截器已剥壳（resolve 即 data）：bin 请求的返回值就是 ArrayBuffer
